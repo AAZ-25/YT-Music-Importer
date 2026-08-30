@@ -1,1 +1,1 @@
-{ Filter = { Executables = ( "SpringBoard", "medialibraryd", ); }; }
+{ Filter = { Executables = ( "SpringBoard", "MobileMusicPlayer", "Music~iphone", "Music~ipad", "Music", ); }; }

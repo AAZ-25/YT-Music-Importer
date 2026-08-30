@@ -1,6 +1,6 @@
 ARCHS = arm64
 TARGET = iphone:clang:latest:15.0
-INSTALL_TARGET_PROCESSES = YouTube SpringBoard medialibraryd
+INSTALL_TARGET_PROCESSES = YouTube SpringBoard Music
 
 include $(THEOS)/makefiles/common.mk
 

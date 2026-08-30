@@ -10,9 +10,9 @@ static NSString * const YTMIRequestNotification = @"com.aaz.ytmusicimporter.requ
 static NSString * const YTMIMusicRequestNotification = @"com.aaz.ytmusicimporter.music.request";
 static NSString * const YTMISharedRoot = @"/var/mobile/Media/YTMusicImporter";
 
-static BOOL YTMIIsMediaLibraryProcess(void) {
+static BOOL YTMIIsMusicProcess(void) {
     NSString *name = NSProcessInfo.processInfo.processName ?: @"";
-    return [name isEqualToString:@"medialibraryd"];
+    return [@[@"MobileMusicPlayer", @"Music~iphone", @"Music~ipad", @"Music"] containsObject:name];
 }
 
 static NSString *YTMIYouTubeContainerPath(void) {
@@ -74,7 +74,7 @@ static void YTMILaunchMusic(void) {
     }
 }
 
-static void YTMIHandleMediaLibraryRequest(void) {
+static void YTMIHandleMusicRequest(void) {
     @autoreleasepool {
         NSString *pendingPath = [YTMISharedRoot stringByAppendingPathComponent:@"pending.plist"];
         NSDictionary *job = [NSDictionary dictionaryWithContentsOfFile:pendingPath];
@@ -166,8 +166,8 @@ static void YTMIRequestCallback(CFNotificationCenterRef center, void *observer, 
     (void)center; (void)observer; (void)name; (void)object; (void)userInfo;
     if ([NSProcessInfo.processInfo.processName isEqualToString:@"SpringBoard"]) {
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ YTMIRelayFromSpringBoard(); });
-    } else if (YTMIIsMediaLibraryProcess()) {
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ YTMIHandleMediaLibraryRequest(); });
+    } else if (YTMIIsMusicProcess()) {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ YTMIHandleMusicRequest(); });
     }
 }
 
@@ -177,8 +177,8 @@ __attribute__((constructor)) static void YTMIMusicBridgeInit(void) {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, YTMIRequestCallback, (__bridge CFStringRef)YTMIRequestNotification, NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
         return;
     }
-    if (YTMIIsMediaLibraryProcess()) {
+    if (YTMIIsMusicProcess()) {
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), NULL, YTMIRequestCallback, (__bridge CFStringRef)YTMIMusicRequestNotification, NULL, CFNotificationSuspensionBehaviorDeliverImmediately);
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ YTMIHandleMediaLibraryRequest(); });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ YTMIHandleMusicRequest(); });
     }
 }
