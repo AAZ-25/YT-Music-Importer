@@ -13,7 +13,7 @@ Applicable license notices are preserved with the project and package.
 ### MImport
 - Source: https://github.com/julioverne/MImport
 - Use: reference for the supported Music-process injection target and observable import architecture.
-- No source code copied into this project.
+- No source code copied into this project. The StoreServices payload and queue behavior are independently implemented from public interface/behavior evidence.
 
 ### ByeTunes
 - Source: https://github.com/EduAlexxis/ByeTunes
