@@ -1,0 +1,5 @@
+.theos/
+packages/
+Vendor/
+.build-request
+.DS_Store

@@ -1,0 +1,85 @@
+name: Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  THEOS: ${{ github.workspace }}/.theos-build
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install build tools
+        run: |
+          brew install ldid xz
+          brew install dpkg || brew link --overwrite dpkg
+      - name: Install project sources
+        run: |
+          rm -rf "$THEOS"
+          git clone --filter=blob:none --no-checkout https://github.com/theos/theos.git "$THEOS"
+          git -C "$THEOS" checkout 5280bd038207e14f8bd76f5417aa2fe641c03228
+          git -C "$THEOS" submodule update --init --recursive
+          git clone --filter=blob:none --no-checkout https://github.com/theos/sdks.git "$RUNNER_TEMP/sdks"
+          git -C "$RUNNER_TEMP/sdks" checkout 0222fd5413cf4b9af096f37b4621afa2688572f7
+          cp -R "$RUNNER_TEMP/sdks/"*.sdk "$THEOS/sdks/"
+          git clone --filter=blob:none --no-checkout https://github.com/PoomSmart/YouTubeHeader.git "$THEOS/include/YouTubeHeader"
+          git -C "$THEOS/include/YouTubeHeader" checkout 1b50d755dab2c79b8f5af45fc89719c812571ae0
+          git clone --filter=blob:none --no-checkout https://github.com/PoomSmart/PSHeader.git "$THEOS/include/PSHeader"
+          git -C "$THEOS/include/PSHeader" checkout 1bb7d9c7d1bc40a57f83e1e58aa53bcf4acdcbfa
+          git clone --filter=blob:none --no-checkout https://github.com/PoomSmart/YTVideoOverlay.git "$GITHUB_WORKSPACE/../YTVideoOverlay"
+          git -C "$GITHUB_WORKSPACE/../YTVideoOverlay" checkout 0f7dbc4387a0e38aad3180744e484fef6cbb9094
+          mkdir -p "$GITHUB_WORKSPACE/Vendor"
+          git clone --filter=blob:none --no-checkout https://github.com/itzzace/ytkace.git "$GITHUB_WORKSPACE/Vendor/YTKACE"
+          git -C "$GITHUB_WORKSPACE/Vendor/YTKACE" checkout 7e562661a68116949ee5f12addc412d074b859ef
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('Vendor/YTKACE/Tweak/Features/Downloads/SABRDownloader.mm')
+          s = p.read_text().replace('[request.HTTPBody writeToFile:path atomically:YES];', '(void)path;').replace('[request writeToFile:path atomically:YES];', '(void)path;')
+          if 'writeToFile:path atomically:YES' in s: raise SystemExit('vendor preparation failed')
+          p.write_text(s)
+          PY
+      - name: Clean
+        run: make clean THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+      - name: Build
+        run: make all THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+      - name: Package
+        run: make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+      - name: Verify package
+        run: |
+          DEB="$(find packages -name '*.deb' -type f | head -n 1)"
+          test -n "$DEB"
+          test "$(dpkg-deb -f "$DEB" Version)" = "0.2.0~beta36"
+          LIST="$(dpkg-deb -c "$DEB")"
+          ! echo "$LIST" | grep -Eq 'ytmusicimporterd|ytmi-python|Python.framework|yt-dlp|MRYIPC|LaunchDaemons/com.aaz.ytmusicimporterd'
+          echo "$LIST" | grep -q 'YTKACE-LICENSE'
+          echo "$LIST" | grep -q 'YTMIMusicBridge'
+          cp "$DEB" YT-Music-Importer-rootless.deb
+          shasum -a 256 YT-Music-Importer-rootless.deb
+      - name: Upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: YT-Music-Importer
+          path: YT-Music-Importer-rootless.deb
+          if-no-files-found: error
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete v0.2.0-beta36 --cleanup-tag --yes >/dev/null 2>&1 || true
+          gh release create v0.2.0-beta36 'YT-Music-Importer-rootless.deb#YT Music Importer rootless DEB' --target "$GITHUB_SHA" --title 'YT Music Importer Beta 36' --prerelease --notes 'Test build with Media Library service import and single-request handoff.'
+      - name: Cleanup
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run list --limit 100 --json databaseId,status --jq '.[] | select(.status == "completed") | .databaseId' | while read -r RUN; do
+            if [ "$RUN" != "$GITHUB_RUN_ID" ]; then gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" >/dev/null 2>&1 || true; fi
+          done
