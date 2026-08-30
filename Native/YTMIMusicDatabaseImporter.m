@@ -1,274 +1,264 @@
 #import "YTMIMusicDatabaseImporter.h"
 #import "YTMIConstants.h"
 #import <AVFoundation/AVFoundation.h>
-#import <arpa/inet.h>
+#import <CoreFoundation/CoreFoundation.h>
 #import <dlfcn.h>
 #import <math.h>
-#import <netinet/in.h>
 #import <objc/message.h>
-#import <sys/socket.h>
-#import <unistd.h>
+#import <sqlite3.h>
+#import <sys/stat.h>
 
-static NSError *YTMIQueueError(NSInteger code, NSString *message) {
-    return [NSError errorWithDomain:@"com.aaz.ytmusicimporter" code:code userInfo:@{NSLocalizedDescriptionKey:message}];
+static NSError *YTMIDBError(NSInteger code, NSString *message) {
+    return [NSError errorWithDomain:@"com.aaz.ytmusicimporter"
+                               code:code
+                           userInfo:@{NSLocalizedDescriptionKey:message ?: @"Music database import failed."}];
 }
 
-static id QSend0(id object, SEL selector) {
-    return object && selector && [object respondsToSelector:selector] ? ((id (*)(id, SEL))objc_msgSend)(object, selector) : nil;
-}
-
-static id QSend1(id object, SEL selector, id value) {
-    return object && selector && [object respondsToSelector:selector] ? ((id (*)(id, SEL, id))objc_msgSend)(object, selector, value) : nil;
-}
-
-static NSString *QSafeText(id value, NSString *fallback) {
+static NSString *YTMISafeText(id value, NSString *fallback) {
     if (![value isKindOfClass:NSString.class]) return fallback;
     NSString *text = [(NSString *)value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     return text.length ? text : fallback;
 }
 
-static BOOL QWriteAll(int fd, const void *bytes, size_t length) {
-    const uint8_t *cursor = bytes;
-    while (length > 0) {
-        ssize_t written = write(fd, cursor, length);
-        if (written <= 0) return NO;
-        cursor += written;
-        length -= (size_t)written;
-    }
-    return YES;
+static BOOL YTMIExec(sqlite3 *db, const char *sql) {
+    return sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK;
 }
 
-@interface YTMIQueueMediaServer : NSObject
-@property(nonatomic) int socketFD;
-@property(nonatomic) uint16_t port;
-@property(nonatomic, copy) NSString *filePath;
-@property(nonatomic, strong) dispatch_semaphore_t servedSemaphore;
-- (instancetype)initWithFilePath:(NSString *)path;
-- (BOOL)start;
-- (void)stop;
-- (NSURL *)mediaURL;
-- (BOOL)waitUntilServed:(NSTimeInterval)timeout;
-@end
-
-@implementation YTMIQueueMediaServer
-- (instancetype)initWithFilePath:(NSString *)path {
-    if ((self = [super init])) {
-        _socketFD = -1;
-        _filePath = [path copy];
-        _servedSemaphore = dispatch_semaphore_create(0);
-    }
-    return self;
-}
-- (BOOL)start {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return NO;
-    int one = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    struct sockaddr_in address;
-    memset(&address, 0, sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    address.sin_port = 0;
-    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0 || listen(fd, 4) != 0) { close(fd); return NO; }
-    socklen_t len = sizeof(address);
-    if (getsockname(fd, (struct sockaddr *)&address, &len) != 0) { close(fd); return NO; }
-    self.socketFD = fd;
-    self.port = ntohs(address.sin_port);
-    NSString *path = [self.filePath copy];
-    dispatch_semaphore_t served = self.servedSemaphore;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        @autoreleasepool {
-            struct timeval timeout = {.tv_sec = 25, .tv_usec = 0};
-            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-            for (NSInteger attempt = 0; attempt < 8; attempt++) {
-                int client = accept(fd, NULL, NULL);
-                if (client < 0) break;
-                setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-                char requestBuffer[4096] = {0};
-                ssize_t requestLength = read(client, requestBuffer, sizeof(requestBuffer) - 1);
-                NSString *request = requestLength > 0 ? [[NSString alloc] initWithBytes:requestBuffer length:(NSUInteger)requestLength encoding:NSUTF8StringEncoding] : @"";
-                BOOL headOnly = [request hasPrefix:@"HEAD "];
-                NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:path error:nil];
-                unsigned long long size = [attrs[NSFileSize] unsignedLongLongValue];
-                unsigned long long start = 0;
-                NSRange rangeHeader = [request rangeOfString:@"Range: bytes=" options:NSCaseInsensitiveSearch];
-                BOOL partial = NO;
-                if (rangeHeader.location != NSNotFound) {
-                    NSString *tail = [request substringFromIndex:NSMaxRange(rangeHeader)];
-                    NSString *first = [[tail componentsSeparatedByString:@"\r\n"].firstObject componentsSeparatedByString:@"-"].firstObject;
-                    unsigned long long requested = strtoull(first.UTF8String, NULL, 10);
-                    if (requested < size) { start = requested; partial = YES; }
-                }
-                unsigned long long bodyLength = size > start ? size - start : 0;
-                NSString *headerText = partial ?
-                    [NSString stringWithFormat:@"HTTP/1.1 206 Partial Content\r\nContent-Type: audio/mp4\r\nContent-Length: %llu\r\nContent-Range: bytes %llu-%llu/%llu\r\nAccept-Ranges: bytes\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n", bodyLength, start, size ? size - 1 : 0, size] :
-                    [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\nContent-Type: audio/mp4\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n", bodyLength];
-                NSData *header = [headerText dataUsingEncoding:NSUTF8StringEncoding];
-                BOOL ok = header.length && QWriteAll(client, header.bytes, header.length);
-                if (!headOnly && ok) {
-                    NSFileHandle *handle = [NSFileHandle fileHandleForReadingAtPath:path];
-                    @try { [handle seekToFileOffset:start]; } @catch (__unused NSException *e) { ok = NO; }
-                    while (ok && handle) {
-                        NSData *chunk = [handle readDataOfLength:64 * 1024];
-                        if (!chunk.length) break;
-                        ok = QWriteAll(client, chunk.bytes, chunk.length);
-                    }
-                    [handle closeFile];
-                    if (ok) dispatch_semaphore_signal(served);
-                }
-                shutdown(client, SHUT_RDWR);
-                close(client);
-                if (!headOnly && ok) break;
-            }
+static BOOL YTMIHasColumn(sqlite3 *db, NSString *table, NSString *column) {
+    NSString *sql = [NSString stringWithFormat:@"PRAGMA table_info(%@)", table];
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql.UTF8String, -1, &stmt, NULL) != SQLITE_OK) return NO;
+    BOOL found = NO;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char *name = sqlite3_column_text(stmt, 1);
+        if (name && [column isEqualToString:[NSString stringWithUTF8String:(const char *)name]]) {
+            found = YES;
+            break;
         }
-    });
+    }
+    sqlite3_finalize(stmt);
+    return found;
+}
+
+static BOOL YTMIValidateSchema(sqlite3 *db) {
+    NSDictionary<NSString *, NSArray<NSString *> *> *required = @{
+        @"item":@[@"item_pid", @"media_type", @"base_location_id", @"in_my_library", @"date_added"],
+        @"item_extra":@[@"item_pid", @"title", @"location", @"file_size", @"total_time_ms", @"media_kind", @"location_kind_id"],
+        @"item_playback":@[@"item_pid", @"audio_format", @"bit_rate", @"sample_rate"],
+        @"item_stats":@[@"item_pid", @"date_accessed"],
+        @"item_store":@[@"item_pid", @"sync_id", @"sync_in_my_library"],
+        @"base_location":@[@"base_location_id", @"path"]
+    };
+    for (NSString *table in required) {
+        for (NSString *column in required[table]) {
+            if (!YTMIHasColumn(db, table, column)) return NO;
+        }
+    }
     return YES;
 }
-- (void)stop { if (self.socketFD >= 0) { shutdown(self.socketFD, SHUT_RDWR); close(self.socketFD); self.socketFD = -1; } }
-- (NSURL *)mediaURL { return self.port ? [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%u/audio.m4a", self.port]] : nil; }
-- (BOOL)waitUntilServed:(NSTimeInterval)timeout { return dispatch_semaphore_wait(self.servedSemaphore, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC))) == 0; }
-- (void)dealloc { [self stop]; }
-@end
 
-static NSDictionary *QStoreMetadata(NSURL *mediaURL, NSURL *localURL, NSDictionary *metadata) {
-    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:localURL options:nil];
-    double seconds = CMTimeGetSeconds(asset.duration);
-    if (!isfinite(seconds) || seconds < 0) seconds = 0;
-    NSString *title = QSafeText(metadata[YTMIJobTitleKey], @"YouTube Audio");
-    NSString *artist = QSafeText(metadata[YTMIJobArtistKey], @"Unknown Artist");
-    NSString *album = QSafeText(metadata[YTMIJobAlbumKey], @"YT Music Importer");
-    NSNumber *itemID = @((uint32_t)arc4random_uniform(UINT32_MAX - 1) + 1);
-    NSDate *now = NSDate.date;
-    NSString *urlString = mediaURL.absoluteString ?: @"";
-    NSString *copyright = @"Imported with YT Music Importer";
-    return @{@"purchaseDate":now,
-             @"is-purchased-redownload":@YES,
-             @"URL":urlString,
-             @"songId":itemID,
-             @"metadata":@{
-                 @"artistName":artist,
-                 @"compilation":@NO,
-                 @"composerName":@"",
-                 @"copyright":copyright,
-                 @"description":copyright,
-                 @"longDescription":copyright,
-                 @"drmVersionNumber":@0,
-                 @"duration":@((long long)(seconds * 1000.0)),
-                 @"explicit":@0,
-                 @"fileExtension":@"m4a",
-                 @"gapless":@NO,
-                 @"genre":@"",
-                 @"isMasteredForItunes":@NO,
-                 @"itemId":itemID,
-                 @"itemName":title,
-                 @"kind":@"song",
-                 @"playlistArtistName":artist,
-                 @"playlistName":album,
-                 @"releaseDate":now,
-                 @"sort-album":album,
-                 @"sort-artist":artist,
-                 @"sort-composer":@"",
-                 @"sort-name":title,
-                 @"trackCount":@1,
-                 @"trackNumber":@1,
-                 @"year":@([[NSCalendar currentCalendar] component:NSCalendarUnitYear fromDate:now])
-             }};
+static BOOL YTMICreateBackup(sqlite3 *source, NSString *path) {
+    sqlite3 *backupDB = NULL;
+    if (sqlite3_open_v2(path.UTF8String, &backupDB, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK) {
+        if (backupDB) sqlite3_close(backupDB);
+        return NO;
+    }
+    sqlite3_backup *backup = sqlite3_backup_init(backupDB, "main", source, "main");
+    if (!backup) {
+        sqlite3_close(backupDB);
+        return NO;
+    }
+    int step = sqlite3_backup_step(backup, -1);
+    int finish = sqlite3_backup_finish(backup);
+    BOOL ok = (step == SQLITE_DONE && finish == SQLITE_OK);
+    if (ok) ok = YTMIExec(backupDB, "PRAGMA quick_check");
+    sqlite3_close(backupDB);
+    return ok;
 }
 
-static NSUInteger QVisibleSongCount(void) {
+static long long YTMIRandomPID(void) {
+    uint64_t upper = (uint64_t)arc4random();
+    uint64_t lower = (uint64_t)arc4random();
+    return (long long)(((upper << 32) | lower) & 0x7fffffffffffffffULL) ?: 1;
+}
+
+static NSUInteger YTMIVisibleSongCount(void) {
     dlopen("/System/Library/Frameworks/MediaPlayer.framework/MediaPlayer", RTLD_LAZY | RTLD_LOCAL);
     Class queryClass = NSClassFromString(@"MPMediaQuery");
-    id query = QSend0(queryClass, NSSelectorFromString(@"songsQuery"));
-    id items = QSend0(query, NSSelectorFromString(@"items"));
+    SEL songsSEL = NSSelectorFromString(@"songsQuery");
+    if (!queryClass || ![queryClass respondsToSelector:songsSEL]) return NSNotFound;
+    id query = ((id (*)(id, SEL))objc_msgSend)(queryClass, songsSEL);
+    SEL itemsSEL = NSSelectorFromString(@"items");
+    id items = query && [query respondsToSelector:itemsSEL] ? ((id (*)(id, SEL))objc_msgSend)(query, itemsSEL) : nil;
     return [items respondsToSelector:@selector(count)] ? [items count] : NSNotFound;
 }
 
-static id YTMIActiveStoreQueue;
-
-@implementation YTMIMusicDatabaseImporter
-- (BOOL)importAudioAtURL:(NSURL *)audioURL metadata:(NSDictionary *)metadata error:(NSError **)error {
-    if (!audioURL.isFileURL || ![NSFileManager.defaultManager fileExistsAtPath:audioURL.path]) { if (error) *error = YTMIQueueError(19, @"The prepared audio file is unavailable."); return NO; }
-    NSString *root = @"/var/mobile/Media/YTMusicImporter";
-    if (![NSFileManager.defaultManager createDirectoryAtPath:root withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil]) { if (error) *error = YTMIQueueError(37, @"Music staging storage could not be prepared."); return NO; }
-    NSString *path = [root stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.m4a", NSUUID.UUID.UUIDString]];
-    if (![NSFileManager.defaultManager copyItemAtPath:audioURL.path toPath:path error:nil]) { if (error) *error = YTMIQueueError(38, @"The audio could not be staged for Music."); return NO; }
-    NSURL *stagingURL = [NSURL fileURLWithPath:path];
-    YTMIQueueMediaServer *server = [[YTMIQueueMediaServer alloc] initWithFilePath:path];
-    if (![server start] || !server.mediaURL) { [NSFileManager.defaultManager removeItemAtPath:path error:nil]; if (error) *error = YTMIQueueError(45, @"The local Music transfer could not be started."); return NO; }
-    NSUInteger songsBefore = QVisibleSongCount();
-    NSInteger code = 0;
-    BOOL accepted = NO;
-    @try {
-        void *store = dlopen("/System/Library/PrivateFrameworks/StoreServices.framework/StoreServices", RTLD_LAZY | RTLD_LOCAL);
-        if (!store) code = 31;
-        Class metadataClass = NSClassFromString(@"SSDownloadMetadata");
-        Class downloadClass = NSClassFromString(@"SSDownload");
-        Class queueClass = NSClassFromString(@"SSDownloadQueue");
-        SEL initMetadataSEL = NSSelectorFromString(@"initWithDictionary:");
-        SEL initDownloadSEL = NSSelectorFromString(@"initWithDownloadMetadata:");
-        SEL kindsSEL = NSSelectorFromString(@"mediaDownloadKinds");
-        SEL initQueueSEL = NSSelectorFromString(@"initWithDownloadKinds:");
-        SEL addSEL = NSSelectorFromString(@"addDownload:");
-        if (!code && (!metadataClass || !downloadClass || !queueClass)) code = 32;
-        if (!code && (![metadataClass instancesRespondToSelector:initMetadataSEL] || ![downloadClass instancesRespondToSelector:initDownloadSEL] || ![queueClass respondsToSelector:kindsSEL] || ![queueClass instancesRespondToSelector:initQueueSEL] || ![queueClass instancesRespondToSelector:addSEL])) code = 35;
-        id metadataObject = nil, download = nil, queue = nil;
-        if (!code) metadataObject = QSend1(((id (*)(id, SEL))objc_msgSend)(metadataClass, @selector(alloc)), initMetadataSEL, QStoreMetadata(server.mediaURL, stagingURL, metadata ?: @{}));
-        if (!code && !metadataObject) code = 34;
-        if (!code) {
-            SEL setPrimarySEL = NSSelectorFromString(@"setPrimaryAssetURL:");
-            if ([metadataObject respondsToSelector:setPrimarySEL]) ((void (*)(id, SEL, id))objc_msgSend)(metadataObject, setPrimarySEL, server.mediaURL);
-            download = QSend1(((id (*)(id, SEL))objc_msgSend)(downloadClass, @selector(alloc)), initDownloadSEL, metadataObject);
-            id kinds = QSend0(queueClass, kindsSEL);
-            queue = QSend1(((id (*)(id, SEL))objc_msgSend)(queueClass, @selector(alloc)), initQueueSEL, kinds);
-            if (!download || !queue) code = 36;
-        }
-        if (!code) {
-            YTMIActiveStoreQueue = queue;
-            accepted = ((BOOL (*)(id, SEL, id))objc_msgSend)(queue, addSEL, download);
-            if (!accepted) code = 36;
-        }
-    } @catch (__unused NSException *exception) { code = 39; accepted = NO; }
-    BOOL served = accepted ? [server waitUntilServed:30.0] : NO;
-    [server stop];
-    if (!accepted || !served) {
-        YTMIActiveStoreQueue = nil;
-        [NSFileManager.defaultManager removeItemAtPath:path error:nil];
-        if (error) *error = YTMIQueueError(code ?: 48, @"Music did not complete the local import transfer.");
-        return NO;
-    }
-
-    void *musicLibrary = dlopen("/System/Library/PrivateFrameworks/MusicLibrary.framework/MusicLibrary", RTLD_LAZY | RTLD_LOCAL);
+static void YTMINotifyMusicLibrary(void) {
+    dlopen("/System/Library/PrivateFrameworks/MusicLibrary.framework/MusicLibrary", RTLD_LAZY | RTLD_LOCAL);
     Class libraryClass = NSClassFromString(@"ML3MusicLibrary");
-    id library = libraryClass && [libraryClass respondsToSelector:NSSelectorFromString(@"sharedLibrary")] ? QSend0(libraryClass, NSSelectorFromString(@"sharedLibrary")) : nil;
+    SEL sharedSEL = NSSelectorFromString(@"sharedLibrary");
+    id library = libraryClass && [libraryClass respondsToSelector:sharedSEL] ? ((id (*)(id, SEL))objc_msgSend)(libraryClass, sharedSEL) : nil;
     for (NSString *name in @[@"notifyEntitiesAddedOrRemoved", @"notifyContentsDidChange", @"notifyLibraryImportDidFinish"]) {
         SEL selector = NSSelectorFromString(name);
         if (library && [library respondsToSelector:selector]) ((void (*)(id, SEL))objc_msgSend)(library, selector);
     }
-    (void)musicLibrary;
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), CFSTR("com.apple.itunes-mobdev.syncDidFinish"), NULL, NULL, true);
+}
 
+static BOOL YTMIInsertItem(sqlite3 *db, long long pid, NSString *title, NSString *filename,
+                           long long fileSize, long long durationMs, long long now) {
+    const char *itemSQL =
+        "INSERT INTO item (item_pid,media_type,title_order,title_order_section,"
+        "item_artist_pid,item_artist_order,item_artist_order_section,series_name_order,series_name_order_section,"
+        "album_pid,album_order,album_order_section,album_artist_pid,album_artist_order,album_artist_order_section,"
+        "composer_pid,composer_order,composer_order_section,genre_id,genre_order,genre_order_section,"
+        "disc_number,track_number,episode_sort_id,base_location_id,remote_location_id,"
+        "exclude_from_shuffle,keep_local,keep_local_status,keep_local_status_reason,keep_local_constraints,"
+        "in_my_library,is_compilation,date_added,show_composer,is_music_show,date_downloaded,download_source_container_pid)"
+        " VALUES (?,8,0,26,0,0,26,0,26,0,0,26,0,0,26,0,0,26,0,0,26,1,1,1,3840,0,0,1,2,0,0,1,0,?,0,0,?,0)";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, itemSQL, -1, &stmt, NULL) != SQLITE_OK) return NO;
+    sqlite3_bind_int64(stmt, 1, pid);
+    sqlite3_bind_int64(stmt, 2, now);
+    sqlite3_bind_int64(stmt, 3, now);
+    BOOL ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    if (!ok) return NO;
+    stmt = NULL;
+    const char *extraSQL =
+        "INSERT INTO item_extra (item_pid,title,sort_title,disc_count,track_count,total_time_ms,year,"
+        "location,file_size,integrity,is_audible_audio_book,date_modified,media_kind,content_rating,"
+        "content_rating_level,is_user_disabled,bpm,genius_id,location_kind_id,copyright)"
+        " VALUES (?,?,?,1,1,?,0,?,?,X'',0,?,1,0,0,0,0,0,42,'')";
+    if (sqlite3_prepare_v2(db, extraSQL, -1, &stmt, NULL) != SQLITE_OK) return NO;
+    sqlite3_bind_int64(stmt, 1, pid);
+    sqlite3_bind_text(stmt, 2, title.UTF8String, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, title.UTF8String, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 4, durationMs);
+    sqlite3_bind_text(stmt, 5, filename.UTF8String, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 6, fileSize);
+    sqlite3_bind_int64(stmt, 7, now);
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    if (!ok) return NO;
+    stmt = NULL;
+    const char *playbackSQL =
+        "INSERT INTO item_playback (item_pid,audio_format,bit_rate,codec_type,codec_subtype,data_kind,"
+        "duration,has_video,relative_volume,sample_rate) VALUES (?,1633772320,256,0,0,0,0,0,0,44100.0)";
+    if (sqlite3_prepare_v2(db, playbackSQL, -1, &stmt, NULL) != SQLITE_OK) return NO;
+    sqlite3_bind_int64(stmt, 1, pid);
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    if (!ok) return NO;
+    stmt = NULL;
+    if (sqlite3_prepare_v2(db, "INSERT INTO item_stats (item_pid,date_accessed) VALUES (?,?)", -1, &stmt, NULL) != SQLITE_OK) return NO;
+    sqlite3_bind_int64(stmt, 1, pid);
+    sqlite3_bind_int64(stmt, 2, now);
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    if (!ok) return NO;
+    stmt = NULL;
+    if (sqlite3_prepare_v2(db, "INSERT INTO item_store (item_pid,sync_id,sync_in_my_library) VALUES (?,?,1)", -1, &stmt, NULL) != SQLITE_OK) return NO;
+    sqlite3_bind_int64(stmt, 1, pid);
+    sqlite3_bind_int64(stmt, 2, YTMIRandomPID());
+    ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+@implementation YTMIMusicDatabaseImporter
+
+- (BOOL)importAudioAtURL:(NSURL *)audioURL metadata:(NSDictionary *)metadata error:(NSError **)error {
+    if (!audioURL.isFileURL || ![NSFileManager.defaultManager fileExistsAtPath:audioURL.path]) {
+        if (error) *error = YTMIDBError(19, @"The prepared audio file is unavailable.");
+        return NO;
+    }
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *databasePath = @"/var/mobile/Media/iTunes_Control/iTunes/MediaLibrary.sqlitedb";
+    if (![fm fileExistsAtPath:databasePath]) databasePath = @"/private/var/mobile/Media/iTunes_Control/iTunes/MediaLibrary.sqlitedb";
+    if (![fm fileExistsAtPath:databasePath]) {
+        if (error) *error = YTMIDBError(70, @"The local Music database is unavailable.");
+        return NO;
+    }
+    NSString *musicDir = [databasePath hasPrefix:@"/private"] ? @"/private/var/mobile/Media/iTunes_Control/Music/F00" : @"/var/mobile/Media/iTunes_Control/Music/F00";
+    if (![fm createDirectoryAtPath:musicDir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil]) {
+        if (error) *error = YTMIDBError(71, @"The local Music media folder could not be prepared.");
+        return NO;
+    }
+    NSString *filename = [NSString stringWithFormat:@"%@.m4a", [[NSUUID.UUID.UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""] lowercaseString]];
+    NSString *destination = [musicDir stringByAppendingPathComponent:filename];
+    if (![fm copyItemAtPath:audioURL.path toPath:destination error:nil]) {
+        if (error) *error = YTMIDBError(72, @"The audio could not be copied into local Music storage.");
+        return NO;
+    }
+    chmod(destination.fileSystemRepresentation, 0644);
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(databasePath.UTF8String, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        [fm removeItemAtPath:destination error:nil];
+        if (error) *error = YTMIDBError(73, @"The local Music database could not be opened.");
+        return NO;
+    }
+    sqlite3_busy_timeout(db, 8000);
+    if (!YTMIValidateSchema(db)) {
+        sqlite3_close(db);
+        [fm removeItemAtPath:destination error:nil];
+        if (error) *error = YTMIDBError(74, @"This Music database schema is not supported safely.");
+        return NO;
+    }
+
+    NSString *backupDir = @"/var/mobile/Media/YTMusicImporter/Backups";
+    [fm createDirectoryAtPath:backupDir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
+    NSString *backupPath = [backupDir stringByAppendingPathComponent:@"MediaLibrary-before-import.sqlite"];
+    [fm removeItemAtPath:backupPath error:nil];
+    if (!YTMICreateBackup(db, backupPath)) {
+        sqlite3_close(db);
+        [fm removeItemAtPath:destination error:nil];
+        if (error) *error = YTMIDBError(75, @"A safe local Music database backup could not be created.");
+        return NO;
+    }
+    chmod(backupPath.fileSystemRepresentation, 0600);
+
+    NSDictionary *attrs = [fm attributesOfItemAtPath:destination error:nil];
+    long long fileSize = [attrs[NSFileSize] longLongValue];
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:destination] options:nil];
+    double seconds = CMTimeGetSeconds(asset.duration);
+    if (!isfinite(seconds) || seconds < 0) seconds = 0;
+    long long durationMs = (long long)(seconds * 1000.0);
+    long long now = (long long)NSDate.date.timeIntervalSince1970;
+    long long pid = YTMIRandomPID();
+    NSString *title = YTMISafeText(metadata[YTMIJobTitleKey], @"YouTube Audio");
+    NSUInteger visibleBefore = YTMIVisibleSongCount();
+
+    BOOL ok = YTMIExec(db, "BEGIN IMMEDIATE");
+    if (ok) ok = YTMIExec(db, "INSERT OR IGNORE INTO base_location (base_location_id,path) VALUES (3840,'iTunes_Control/Music/F00')");
+    if (ok) ok = YTMIInsertItem(db, pid, title, filename, fileSize, durationMs, now);
+    if (ok) ok = YTMIExec(db, "COMMIT");
+    else YTMIExec(db, "ROLLBACK");
+    sqlite3_close(db);
+    if (!ok) {
+        [fm removeItemAtPath:destination error:nil];
+        if (error) *error = YTMIDBError(76, @"The Music database transaction was rejected and rolled back.");
+        return NO;
+    }
+
+    YTMINotifyMusicLibrary();
     BOOL visible = NO;
-    NSDate *visibilityDeadline = [NSDate dateWithTimeIntervalSinceNow:12.0];
-    while (visibilityDeadline.timeIntervalSinceNow > 0) {
-        NSUInteger songsAfter = QVisibleSongCount();
-        if (songsBefore != NSNotFound && songsAfter != NSNotFound && songsAfter > songsBefore) {
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:15.0];
+    while (deadline.timeIntervalSinceNow > 0) {
+        NSUInteger visibleAfter = YTMIVisibleSongCount();
+        if (visibleBefore != NSNotFound && visibleAfter != NSNotFound && visibleAfter > visibleBefore) {
             visible = YES;
             break;
         }
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.5]];
     }
-
     if (!visible) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(180 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-            [NSFileManager.defaultManager removeItemAtPath:path error:nil];
-            YTMIActiveStoreQueue = nil;
-        });
-        if (error) *error = YTMIQueueError(62, @"Music received the audio but the new song is not visible.");
+        if (error) *error = YTMIDBError(77, @"The local record was committed but Music has not refreshed it yet.");
         return NO;
     }
-
-    [NSFileManager.defaultManager removeItemAtURL:audioURL error:nil];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(180 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ [NSFileManager.defaultManager removeItemAtPath:path error:nil]; YTMIActiveStoreQueue = nil; });
     return YES;
 }
-@end
 
+@end

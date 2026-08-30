@@ -34,6 +34,7 @@ YTMIMusicBridge_CFLAGS = -fobjc-arc \
 	-I$(THEOS_PROJECT_DIR)/Shared \
 	-I$(THEOS_PROJECT_DIR)/Native
 YTMIMusicBridge_FRAMEWORKS = Foundation AVFoundation CoreMedia CoreFoundation
+YTMIMusicBridge_LIBRARIES = sqlite3
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 
