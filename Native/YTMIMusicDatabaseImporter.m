@@ -10,6 +10,10 @@ static NSError *YTMIDBError(NSInteger code, NSString *message) {
     return [NSError errorWithDomain:@"com.aaz.ytmusicimporter" code:code userInfo:@{NSLocalizedDescriptionKey:message ?: @"Music import failed."}];
 }
 
+static void YTMITrace(NSMutableArray *trace, NSString *stage) {
+    if (trace && stage.length) [trace addObject:stage];
+}
+
 static NSString *YTMISafeText(id value, NSString *fallback) {
     if (![value isKindOfClass:NSString.class]) return fallback;
     NSString *text = [(NSString *)value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -252,35 +256,43 @@ static void YTMINotifyMusicLibrary(void) {
 }
 
 @implementation YTMIMusicDatabaseImporter
-- (BOOL)importAudioAtURL:(NSURL *)audioURL metadata:(NSDictionary *)metadata error:(NSError **)error {
+- (BOOL)importAudioAtURL:(NSURL *)audioURL metadata:(NSDictionary *)metadata trace:(NSMutableArray *)trace error:(NSError **)error {
     NSFileManager *fm=NSFileManager.defaultManager;
-    if(!audioURL.isFileURL||![fm fileExistsAtPath:audioURL.path]){if(error)*error=YTMIDBError(19,@"The prepared audio file is unavailable.");return NO;}
+    if(!audioURL.isFileURL||![fm fileExistsAtPath:audioURL.path]){YTMITrace(trace,@"db.source.missing");if(error)*error=YTMIDBError(19,@"The prepared audio file is unavailable.");return NO;}
+    YTMITrace(trace,@"db.source.present");
     NSString *dbPath=@"/var/mobile/Media/iTunes_Control/iTunes/MediaLibrary.sqlitedb";
     if(![fm fileExistsAtPath:dbPath])dbPath=@"/private/var/mobile/Media/iTunes_Control/iTunes/MediaLibrary.sqlitedb";
-    if(![fm fileExistsAtPath:dbPath]){if(error)*error=YTMIDBError(70,@"The local Music database is unavailable.");return NO;}
+    if(![fm fileExistsAtPath:dbPath]){YTMITrace(trace,@"db.library.missing");if(error)*error=YTMIDBError(70,@"The local Music database is unavailable.");return NO;}
+    YTMITrace(trace,@"db.library.present");
 
     NSString *dbDir=dbPath.stringByDeletingLastPathComponent;
     sqlite3 *live=NULL;
     if(sqlite3_open_v2(dbPath.UTF8String,&live,SQLITE_OPEN_READONLY|SQLITE_OPEN_FULLMUTEX,NULL)!=SQLITE_OK){
         if(live)sqlite3_close(live);
+        YTMITrace(trace,@"db.open.failed");
         if(error)*error=YTMIDBError(73,@"The Music database could not be opened safely.");
         return NO;
     }
+    YTMITrace(trace,@"db.open.complete");
     NSString *musicDir=YTMIResolvedMusicDirectory(live,dbPath);
     if(!musicDir.length||![fm createDirectoryAtPath:musicDir withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil]){
         sqlite3_close(live);
+        YTMITrace(trace,@"db.location.failed");
         if(error)*error=YTMIDBError(71,@"The Music media folder could not be resolved safely.");
         return NO;
     }
+    YTMITrace(trace,@"db.location.resolved");
 
     NSString *token=[NSUUID.UUID.UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""].lowercaseString;
     NSString *filename=[token stringByAppendingPathExtension:@"m4a"];
     NSString *destination=[musicDir stringByAppendingPathComponent:filename];
     if(![fm copyItemAtPath:audioURL.path toPath:destination error:nil]){
         sqlite3_close(live);
+        YTMITrace(trace,@"db.payload.copy-failed");
         if(error)*error=YTMIDBError(72,@"The audio could not be copied into Music storage.");
         return NO;
     }
+    YTMITrace(trace,@"db.payload.copied");
     chmod(destination.fileSystemRepresentation,0644);
 
     NSDictionary *attrs=[fm attributesOfItemAtPath:destination error:nil];
@@ -291,9 +303,11 @@ static void YTMINotifyMusicLibrary(void) {
     if(fileSize<=0||!hasAudio||!isfinite(seconds)||seconds<=0.25){
         sqlite3_close(live);
         [fm removeItemAtPath:destination error:nil];
+        YTMITrace(trace,@"db.payload.precheck-failed");
         if(error)*error=YTMIDBError(80,@"The prepared audio is not a playable Music file.");
         return NO;
     }
+    YTMITrace(trace,@"db.payload.precheck-valid");
     long long durationMs=(long long)(seconds*1000.0),now=(long long)NSDate.date.timeIntervalSince1970,itemPID=YTMIRandomPID();
     NSString *title=YTMISafeText(metadata[YTMIJobTitleKey],@"YouTube Audio");
     NSString *artist=YTMISafeText(metadata[YTMIJobArtistKey],@"YouTube");
@@ -307,22 +321,26 @@ static void YTMINotifyMusicLibrary(void) {
     [fm removeItemAtPath:stage error:nil];[fm removeItemAtPath:backup error:nil];
 
     BOOL copied=YTMICopyDatabase(live,stage)&&YTMICopyDatabase(live,backup);sqlite3_close(live);
-    if(!copied){[fm removeItemAtPath:stage error:nil];[fm removeItemAtPath:destination error:nil];if(error)*error=YTMIDBError(75,@"A protected database snapshot could not be created.");return NO;}
+    if(!copied){YTMITrace(trace,@"db.snapshot.failed");[fm removeItemAtPath:stage error:nil];[fm removeItemAtPath:destination error:nil];if(error)*error=YTMIDBError(75,@"A protected database snapshot could not be created.");return NO;}
+    YTMITrace(trace,@"db.snapshot.complete");
     chmod(backup.fileSystemRepresentation,0600);
 
     sqlite3 *db=NULL;
-    if(sqlite3_open_v2(stage.UTF8String,&db,SQLITE_OPEN_READWRITE|SQLITE_OPEN_FULLMUTEX,NULL)!=SQLITE_OK){if(db)sqlite3_close(db);[fm removeItemAtPath:stage error:nil];[fm removeItemAtPath:destination error:nil];if(error)*error=YTMIDBError(73,@"The staged Music database could not be opened.");return NO;}
+    if(sqlite3_open_v2(stage.UTF8String,&db,SQLITE_OPEN_READWRITE|SQLITE_OPEN_FULLMUTEX,NULL)!=SQLITE_OK){YTMITrace(trace,@"db.stage.open-failed");if(db)sqlite3_close(db);[fm removeItemAtPath:stage error:nil];[fm removeItemAtPath:destination error:nil];if(error)*error=YTMIDBError(73,@"The staged Music database could not be opened.");return NO;}
     sqlite3_busy_timeout(db,8000);
     BOOL ok=YTMIValidateSchema(db)&&YTMIQuickCheck(db);
+    YTMITrace(trace,ok?@"db.schema.valid":@"db.schema.invalid");
     if(ok)ok=YTMIExec(db,@"BEGIN IMMEDIATE");
     if(ok)ok=YTMIExec(db,@"INSERT OR IGNORE INTO base_location(base_location_id,path) VALUES(3840,'iTunes_Control/Music/F00')");
     if(ok)ok=YTMIInsertCompleteItem(db,itemPID,title,artist,album,genre,filename,fileSize,durationMs,now);
     if(ok)ok=YTMIExec(db,@"COMMIT");else YTMIExec(db,@"ROLLBACK");
+    if(ok)YTMITrace(trace,@"db.transaction.committed");
     if(ok)YTMIExec(db,@"PRAGMA wal_checkpoint(TRUNCATE)");
     if(ok)YTMIExec(db,@"PRAGMA journal_mode=DELETE");
     if(ok)ok=YTMIQuickCheck(db);
     sqlite3_close(db);
-    if(!ok){[fm removeItemAtPath:stage error:nil];[fm removeItemAtPath:destination error:nil];if(error)*error=YTMIDBError(76,@"The complete Music database transaction was rejected.");return NO;}
+    if(!ok){YTMITrace(trace,@"db.transaction.failed");[fm removeItemAtPath:stage error:nil];[fm removeItemAtPath:destination error:nil];if(error)*error=YTMIDBError(76,@"The complete Music database transaction was rejected.");return NO;}
+    YTMITrace(trace,@"db.stage.integrity-valid");
 
     NSDictionary *dbAttrs=[fm attributesOfItemAtPath:dbPath error:nil];
     [fm removeItemAtPath:[dbPath stringByAppendingString:@"-wal"] error:nil];
@@ -331,17 +349,27 @@ static void YTMINotifyMusicLibrary(void) {
     NSURL *resultURL=nil;
     BOOL replaced=[fm replaceItemAtURL:dbURL withItemAtURL:stageURL backupItemName:nil options:0 resultingItemURL:&resultURL error:nil];
     if(!replaced){
+        YTMITrace(trace,@"db.replacement.failed");
         [fm removeItemAtPath:stage error:nil];[fm removeItemAtPath:destination error:nil];
         if(error)*error=YTMIDBError(78,@"The protected Music database replacement failed.");return NO;
     }
+    YTMITrace(trace,@"db.replacement.complete");
     if(dbAttrs)[fm setAttributes:dbAttrs ofItemAtPath:dbPath error:nil];
 
     sqlite3 *verify=NULL;BOOL verified=sqlite3_open_v2(dbPath.UTF8String,&verify,SQLITE_OPEN_READONLY,NULL)==SQLITE_OK;
-    sqlite3_stmt *stmt=NULL;if(verified&&sqlite3_prepare_v2(verify,"SELECT 1 FROM item JOIN item_extra USING(item_pid) JOIN item_store USING(item_pid) JOIN item_search USING(item_pid) WHERE item.item_pid=? AND item_extra.location=?",-1,&stmt,NULL)==SQLITE_OK){sqlite3_bind_int64(stmt,1,itemPID);YTMIBindText(stmt,2,filename);verified=sqlite3_step(stmt)==SQLITE_ROW;}else verified=NO;
+    sqlite3_stmt *stmt=NULL;if(verified&&sqlite3_prepare_v2(verify,"SELECT item_extra.title,item_artist.item_artist,album.album FROM item JOIN item_extra USING(item_pid) JOIN item_store USING(item_pid) JOIN item_search USING(item_pid) JOIN item_artist ON item.item_artist_pid=item_artist.item_artist_pid JOIN album ON item.album_pid=album.album_pid WHERE item.item_pid=? AND item_extra.location=?",-1,&stmt,NULL)==SQLITE_OK){sqlite3_bind_int64(stmt,1,itemPID);YTMIBindText(stmt,2,filename);if(sqlite3_step(stmt)==SQLITE_ROW){NSString *storedTitle=sqlite3_column_text(stmt,0)?[NSString stringWithUTF8String:(const char *)sqlite3_column_text(stmt,0)]:@"";NSString *storedArtist=sqlite3_column_text(stmt,1)?[NSString stringWithUTF8String:(const char *)sqlite3_column_text(stmt,1)]:@"";NSString *storedAlbum=sqlite3_column_text(stmt,2)?[NSString stringWithUTF8String:(const char *)sqlite3_column_text(stmt,2)]:@"";verified=[storedTitle isEqualToString:title]&&[storedArtist isEqualToString:artist]&&[storedAlbum isEqualToString:album];YTMITrace(trace,[storedTitle isEqualToString:title]?@"db.metadata.title-match":@"db.metadata.title-mismatch");YTMITrace(trace,[storedArtist isEqualToString:artist]?@"db.metadata.artist-match":@"db.metadata.artist-mismatch");YTMITrace(trace,[storedAlbum isEqualToString:album]?@"db.metadata.album-match":@"db.metadata.album-mismatch");}else verified=NO;}else verified=NO;
     sqlite3_finalize(stmt);if(verify)sqlite3_close(verify);
-    if(!verified){if(error)*error=YTMIDBError(79,@"The replaced Music database could not verify the local record.");return NO;}
+    if(!verified){YTMITrace(trace,@"db.record.verify-failed");if(error)*error=YTMIDBError(79,@"The replaced Music database could not verify the local record.");return NO;}
+    YTMITrace(trace,@"db.record.verified");
+
+    NSDictionary *postAttrs=[fm attributesOfItemAtPath:destination error:nil];
+    AVURLAsset *postAsset=[AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:destination] options:nil];
+    BOOL postPayload=[postAttrs[NSFileSize] longLongValue]>0&&[fm isReadableFileAtPath:destination]&&[postAsset tracksWithMediaType:AVMediaTypeAudio].count>0&&CMTimeGetSeconds(postAsset.duration)>0.25;
+    if(!postPayload){YTMITrace(trace,@"db.payload.postcheck-failed");if(error)*error=YTMIDBError(81,@"The Music payload did not survive the database replacement.");return NO;}
+    YTMITrace(trace,@"db.payload.postcheck-valid");
 
     YTMINotifyMusicLibrary();
+    YTMITrace(trace,@"db.refresh.sent");
     return YES;
 }
 @end
