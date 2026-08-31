@@ -168,12 +168,22 @@ static void YTMIImportLibraryItem(NSDictionary *item, YTPlayerViewController *pl
     if (!audioURL) { YTMIShowMessage(player, @"The downloaded audio file is unavailable."); return; }
     YTMIShowMessage(player, @"Sending the saved audio to Music. Music may open briefly.");
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSError *error = nil;
-        BOOL imported = [[YTMIMusicImporter new] importAudioAtURL:audioURL metadata:YTMIMetadataForLibraryItem(item) error:&error];
-        if (imported) YTMILogStage(@"Import completed");
-        else if ([error.domain isEqualToString:@"com.aaz.ytmusicimporter"] && error.code > 0) YTMILogStage([NSString stringWithFormat:@"Music import code=%ld", (long)error.code]);
-        else YTMILogStage(@"Music import code=generic");
-        YTMIShowMessage(player, imported ? @"Music accepted the import. Check the Music app. The source remains in Downloads." : YTMIImportFailureMessage(error));
+        NSDictionary *metadata = YTMIMetadataForLibraryItem(item);
+        YTMIPrepareAudioForMusic(audioURL, metadata, ^(NSURL *preparedURL, NSError *prepareError) {
+            if (!preparedURL) {
+                (void)prepareError;
+                YTMILogStage(@"Music import code=80");
+                YTMIShowMessage(player, YTMIImportFailureMessage([NSError errorWithDomain:@"com.aaz.ytmusicimporter" code:80 userInfo:nil]));
+                return;
+            }
+            NSError *error = nil;
+            BOOL imported = [[YTMIMusicImporter new] importAudioAtURL:preparedURL metadata:metadata error:&error];
+            [NSFileManager.defaultManager removeItemAtURL:preparedURL error:nil];
+            if (imported) YTMILogStage(@"Import completed");
+            else if ([error.domain isEqualToString:@"com.aaz.ytmusicimporter"] && error.code > 0) YTMILogStage([NSString stringWithFormat:@"Music import code=%ld", (long)error.code]);
+            else YTMILogStage(@"Music import code=generic");
+            YTMIShowMessage(player, imported ? @"Music accepted the import. Check the Music app. The source remains in Downloads." : YTMIImportFailureMessage(error));
+        });
     });
 }
 
@@ -288,7 +298,16 @@ static void YTMIDownloadDirectAudio(NSURL *audioURL, NSDictionary *metadata, YTP
             YTMIShowMessage(player, @"Download failed while preparing the audio.");
             return;
         }
-        YTMIStoreCompletedDownload(tempURL, metadata, player);
+        YTMIPrepareAudioForMusic(tempURL, metadata, ^(NSURL *preparedURL, NSError *prepareError) {
+            [NSFileManager.defaultManager removeItemAtURL:tempURL error:nil];
+            if (!preparedURL) {
+                (void)prepareError;
+                YTMILogStage(@"Direct audio finalization failed");
+                YTMIShowMessage(player, @"The downloaded audio could not be finalized for Music.");
+                return;
+            }
+            YTMIStoreCompletedDownload(preparedURL, metadata, player);
+        });
     }];
     [task resume];
 }

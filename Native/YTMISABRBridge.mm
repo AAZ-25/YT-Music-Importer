@@ -1,4 +1,5 @@
 #import "YTMISABRBridge.h"
+#import "../Shared/YTMIConstants.h"
 #import <AVFoundation/AVFoundation.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -376,7 +377,7 @@ static YTKACEStreamOption *YTMIBestAudioOption(id response) {
     return best;
 }
 
-static void YTMIRemuxAudio(NSURL *inputURL, void (^completion)(NSURL *, NSError *)) {
+void YTMIPrepareAudioForMusic(NSURL *inputURL, NSDictionary *metadata, YTMISABRCompletion completion) {
     NSString *name = [NSString stringWithFormat:@"ytmi-%@.m4a", NSUUID.UUID.UUIDString];
     NSURL *outputURL = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:name]];
     [NSFileManager.defaultManager removeItemAtURL:outputURL error:nil];
@@ -400,10 +401,26 @@ static void YTMIRemuxAudio(NSURL *inputURL, void (^completion)(NSURL *, NSError 
     exporter.outputURL = outputURL;
     exporter.outputFileType = type;
     exporter.shouldOptimizeForNetworkUse = NO;
+    NSMutableArray<AVMetadataItem *> *embedded = [NSMutableArray array];
+    NSDictionary *keys = @{
+        YTMIJobTitleKey: AVMetadataCommonKeyTitle,
+        YTMIJobArtistKey: AVMetadataCommonKeyArtist,
+        YTMIJobAlbumKey: AVMetadataCommonKeyAlbumName
+    };
+    for (NSString *sourceKey in keys) {
+        NSString *value = [metadata[sourceKey] isKindOfClass:NSString.class] ? metadata[sourceKey] : nil;
+        value = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (!value.length) continue;
+        AVMutableMetadataItem *item = [AVMutableMetadataItem metadataItem];
+        item.keySpace = AVMetadataKeySpaceCommon;
+        item.key = keys[sourceKey];
+        item.value = value;
+        [embedded addObject:item];
+    }
+    exporter.metadata = embedded;
     [exporter exportAsynchronouslyWithCompletionHandler:^{
         NSError *error = exporter.error;
         if (exporter.status == AVAssetExportSessionStatusCompleted) {
-            [NSFileManager.defaultManager removeItemAtURL:inputURL error:nil];
             completion(outputURL, nil);
         } else {
             [NSFileManager.defaultManager removeItemAtURL:outputURL error:nil];
@@ -462,7 +479,8 @@ void YTMIStartSABRAudioDownload(id playerResponse,
                                                      userInfo:@{NSLocalizedDescriptionKey: @"The audio download did not complete."}]);
             return;
         }
-        YTMIRemuxAudio(audioURL, ^(NSURL *finalURL, NSError *remuxError) {
+        YTMIPrepareAudioForMusic(audioURL, @{}, ^(NSURL *finalURL, NSError *remuxError) {
+            [NSFileManager.defaultManager removeItemAtURL:audioURL error:nil];
             if (finalURL) YTMISABRLog(@"Audio download completed");
             else YTMISABRLog(@"Audio finalization failed");
             completion(finalURL, remuxError);

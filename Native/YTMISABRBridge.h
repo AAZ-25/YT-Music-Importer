@@ -11,6 +11,9 @@ extern "C" {
 
 FOUNDATION_EXPORT void YTMIInstallSABRCapture(void);
 FOUNDATION_EXPORT void YTMISetSABRLogger(void (^ _Nullable logger)(NSString *stage));
+FOUNDATION_EXPORT void YTMIPrepareAudioForMusic(NSURL *inputURL,
+                                                    NSDictionary *metadata,
+                                                    YTMISABRCompletion completion);
 FOUNDATION_EXPORT void YTMIStartSABRAudioDownload(id playerResponse,
                                                    NSString *videoID,
                                                    YTMISABRProgress _Nullable progress,
