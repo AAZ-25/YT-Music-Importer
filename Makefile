@@ -1,6 +1,6 @@
 ARCHS = arm64
 TARGET = iphone:clang:latest:15.0
-INSTALL_TARGET_PROCESSES = YouTube SpringBoard Music
+INSTALL_TARGET_PROCESSES = YouTube SpringBoard
 
 include $(THEOS)/makefiles/common.mk
 
@@ -26,8 +26,7 @@ YTMusicImporter_FRAMEWORKS = UIKit Foundation AVFoundation VideoToolbox CoreMedi
 YTMusicImporter_LIBRARIES = z
 
 YTMIMusicBridge_FILES = SpringBoard/YTMISpringBoardBridge.m \
-	Native/YTMIMusicDatabaseImporter.m \
-	Native/YTMIMusicLibraryCompatibility.m
+	Native/YTMIMusicDatabaseImporter.m
 YTMIMusicBridge_CFLAGS = -fobjc-arc \
 	-Wno-nullability-completeness \
 	-include objc/runtime.h \

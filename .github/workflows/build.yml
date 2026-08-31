@@ -56,10 +56,12 @@ jobs:
         run: |
           DEB="$(find packages -name '*.deb' -type f | head -n 1)"
           test -n "$DEB"
-          test "$(dpkg-deb -f "$DEB" Version)" = "0.2.0~beta39"
+          test "$(dpkg-deb -f "$DEB" Version)" = "0.2.0~beta40"
           LIST="$(dpkg-deb -c "$DEB")"
           ! echo "$LIST" | grep -Eq 'ytmusicimporterd|ytmi-python|Python.framework|yt-dlp|MRYIPC|LaunchDaemons/com.aaz.ytmusicimporterd'
           echo "$LIST" | grep -q 'YTKACE-LICENSE'
+          echo "$LIST" | grep -q 'BYETUNES-LICENSE'
+          ! echo "$LIST" | grep -Eqi 'idevice|pairing|lockdown'
           echo "$LIST" | grep -q 'YTMIMusicBridge'
           cp "$DEB" YT-Music-Importer-rootless.deb
           shasum -a 256 YT-Music-Importer-rootless.deb
@@ -73,8 +75,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete v0.2.0-beta39 --cleanup-tag --yes >/dev/null 2>&1 || true
-          gh release create v0.2.0-beta39 'YT-Music-Importer-rootless.deb#YT Music Importer rootless DEB' --target "$GITHUB_SHA" --title 'YT Music Importer Beta 39' --prerelease --notes 'Local MediaLibrary database transaction build with backup, rollback, and visibility verification.'
+          gh release delete v0.2.0-beta40 --cleanup-tag --yes >/dev/null 2>&1 || true
+          gh release create v0.2.0-beta40 'YT-Music-Importer-rootless.deb#YT Music Importer rootless DEB' --target "$GITHUB_SHA" --title 'YT Music Importer Beta 40' --prerelease --notes 'Complete local MediaLibrary relational import with staged database replacement and rollback.'
       - name: Cleanup
         if: success()
         env:
