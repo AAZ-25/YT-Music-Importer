@@ -26,3 +26,9 @@ Applicable license notices are preserved with the project and package.
 - Pinned commit: `7df3de91366fc47c1322d88103900b3e916607a3`
 - License: GPL-3.0
 - Use: architectural research reference for a Music-owned StoreServices import queue and post-import playable-audio validation. The project implements its runtime-checked importer independently; no TubePod source code is copied or linked.
+
+
+### Apple StoreServices runtime interfaces
+- Sources: public iOS 10, iOS 14, iOS 15.5, and iOS 17 runtime headers, plus public iOS 17.6 reverse-engineered interface output.
+- Use: verify the cross-version selector and callback contract of `SSImportDownloadToIPodLibraryRequest`.
+- No Apple implementation source is copied; the project invokes the runtime interface independently.
