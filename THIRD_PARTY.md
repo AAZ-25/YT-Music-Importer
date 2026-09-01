@@ -24,5 +24,5 @@ Applicable license notices are preserved with the project and package.
 ### TubePod
 - Source: https://github.com/pruefsumme/TubePod
 - Pinned commit: `7df3de91366fc47c1322d88103900b3e916607a3`
-- License: MIT
-- Use: the Music-owned StoreServices import queue, read-only record discovery, and post-import playable-audio repair pattern were adapted for the runtime-selected importer. Required attribution is preserved; TubePod's legacy YouTube integration and private diagnostics are not included.
+- License: GPL-3.0
+- Use: architectural research reference for a Music-owned StoreServices import queue and post-import playable-audio validation. The project implements its runtime-checked importer independently; no TubePod source code is copied or linked.
