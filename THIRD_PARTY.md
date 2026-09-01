@@ -41,9 +41,10 @@ Applicable license notices are preserved with the project and package.
 
 ### MediaPlayer local-song contract research
 
-- Sources: public reverse-engineered iOS 17.6.1 and iOS 18.2 MusicLibrary/MediaPlayer interfaces and implementations, including `ML3Track`, `ML3Entity`, and `MPMediaLibraryDataProviderML3`.
+- Sources: public iOS 18.1 MediaPlayer SDK headers and public reverse-engineered iOS 17.6.1 and iOS 18.2 MusicLibrary/MediaPlayer interfaces and implementations, including `MPMediaItem`, `MPMediaQuery`, `ML3Track`, `ML3Entity`, and `MPMediaLibraryDataProviderML3`.
 - Reference commits: `95df6b804bee0e01538eb2ddad0413609938d063` and `e26ed4563f78871c59d2d96856756a65d62517e5`.
-- Use: verify song media type, audio-format metadata, post-location library membership, visibility checks, and rollback behavior.
+- SDK reference commit: `1b92ff4a8928f582876e1d388d1381c6a0c59eb9` from `xybp888/iOS-SDKs`.
+- Use: verify that Music is media type `1 << 0`, that `1 << 3` is Audio iTunes U, and verify the public `songsQuery` plus persistent-ID predicate used for final Songs-library acceptance.
 - No Apple implementation source is copied or redistributed; the importer implements the observed contract independently through runtime-resolved interfaces.
 
 ### MusicLibrary artist and album relationship research
@@ -51,4 +52,4 @@ Applicable license notices are preserved with the project and package.
 - Source: public reverse-engineered iOS 18.2 `ML3Track`, `ML3Artist`, `ML3Album`, and `ML3Entity` interfaces and implementations.
 - Reference commit: `e26ed4563f78871c59d2d96856756a65d62517e5`.
 - Use: verify that track artist and album names are joined collection values backed by `item_artist_pid` and `album_pid`, and that the collection entities have their own persistent records.
-- No Apple implementation source is copied or redistributed; Beta 52 independently creates and verifies the required runtime relationships.
+- No Apple implementation source is copied or redistributed; Beta 53 independently creates and verifies the required runtime relationships.
