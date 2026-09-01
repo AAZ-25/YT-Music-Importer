@@ -20,3 +20,9 @@ Applicable license notices are preserved with the project and package.
 - Source: https://github.com/jkcoxson/idevice
 - License: MIT
 - Use: build-feasibility research for a device-sync transport boundary. It is not shipped in Beta 40.
+
+### TubePod
+- Source: https://github.com/pruefsumme/TubePod
+- Pinned commit: `7df3de91366fc47c1322d88103900b3e916607a3`
+- License: MIT
+- Use: the Music-owned StoreServices import queue, read-only record discovery, and post-import playable-audio repair pattern were adapted for the runtime-selected importer. Required attribution is preserved; TubePod's legacy YouTube integration and private diagnostics are not included.
