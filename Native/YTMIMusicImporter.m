@@ -22,7 +22,7 @@ static NSString *YTMIJobDirectory(void) {
 @implementation YTMIMusicImporter
 
 - (BOOL)importAudioAtURL:(NSURL *)audioURL metadata:(NSDictionary *)metadata error:(NSError **)error {
-    NSString *importID = [metadata[YTMIJobImportIDKey] isKindOfClass:NSString.class] ? metadata[YTMIJobImportIDKey] : @"B42-UNKNOWN";
+    NSString *importID = [metadata[YTMIJobImportIDKey] isKindOfClass:NSString.class] ? metadata[YTMIJobImportIDKey] : @"B45-UNKNOWN";
     if (!audioURL.isFileURL || ![NSFileManager.defaultManager fileExistsAtPath:audioURL.path]) {
         self.lastDiagnostics = @{YTMIJobImportIDKey:importID, @"trace":@[@"client.source.missing"]};
         if (error) *error = YTMIClientError(19, @"The prepared audio file is unavailable.");
@@ -55,7 +55,7 @@ static NSString *YTMIJobDirectory(void) {
 
     CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(), (__bridge CFStringRef)YTMIRequestNotification, NULL, NULL, true);
 
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:55.0];
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:170.0];
     while ([deadline timeIntervalSinceNow] > 0) {
         NSDictionary *result = [NSDictionary dictionaryWithContentsOfFile:resultPath];
         if ([result[@"nonce"] isKindOfClass:NSString.class] && [result[@"nonce"] isEqualToString:nonce]) {
