@@ -38,6 +38,12 @@ static void YTMISetValue(NSMutableDictionary *values, void *framework, const cha
     if (key.length && value) values[key] = value;
 }
 
+static void YTMISetOptionalValue(NSMutableDictionary *values, void *framework, const char *symbol, id value) {
+    NSString *__unsafe_unretained *address = framework ? (NSString *__unsafe_unretained *)dlsym(framework, symbol) : NULL;
+    NSString *key = (address && *address) ? *address : nil;
+    if (key.length && value) values[key] = value;
+}
+
 static NSString *YTMIMediaFolder(id library) {
     if (YTMISelector(library, @"mediaFolderPath", 0)) {
         id path = ((id (*)(id, SEL))objc_msgSend)(library, NSSelectorFromString(@"mediaFolderPath"));
@@ -138,10 +144,9 @@ static BOOL YTMIPlayablePath(NSString *path) {
     YTMISetValue(values, music, "ML3TrackPropertyDiscNumber", @"disc_number", @1);
     YTMISetValue(values, music, "ML3TrackPropertyHidden", @"hidden", @NO);
     YTMISetValue(values, music, "ML3TrackPropertyIsInMyLibrary", @"is_in_my_library", @YES);
-    YTMISetValue(values, music, "ML3TrackPropertyFileExtension", @"file_extension", @"m4a");
-    if (sampleRate > 0) YTMISetValue(values, music, "ML3TrackPropertySampleRate", @"sample_rate", @(sampleRate));
-    if (durationSamples > 0) YTMISetValue(values, music, "ML3TrackPropertyDurationInSamples", @"duration_in_samples", @(durationSamples));
-    if (bitRate > 0) YTMISetValue(values, music, "ML3TrackPropertyBitRate", @"bit_rate", @(bitRate));
+    if (sampleRate > 0) YTMISetOptionalValue(values, music, "ML3TrackPropertySampleRate", @(sampleRate));
+    if (durationSamples > 0) YTMISetOptionalValue(values, music, "ML3TrackPropertyDurationInSamples", @(durationSamples));
+    if (bitRate > 0) YTMISetOptionalValue(values, music, "ML3TrackPropertyBitRate", @(bitRate));
 
     id track = nil;
     @try { track = ((id (*)(id, SEL, id, id))objc_msgSend)(trackClass, NSSelectorFromString(@"newWithDictionary:inLibrary:"), values, library); }
