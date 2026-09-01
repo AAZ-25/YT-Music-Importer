@@ -165,7 +165,7 @@ static void YTMIImportLibraryItem(NSDictionary *item, YTPlayerViewController *pl
     NSURL *audioURL = YTMIURLForLibraryItem(item);
     if (!audioURL) { YTMIShowMessage(player, @"The downloaded audio file is unavailable."); return; }
     NSString *rawID = [[[[NSUUID UUID] UUIDString] stringByReplacingOccurrencesOfString:@"-" withString:@""] uppercaseString];
-    NSString *importID = [NSString stringWithFormat:@"B49-%@", [rawID substringToIndex:8]];
+    NSString *importID = [NSString stringWithFormat:@"B50-%@", [rawID substringToIndex:8]];
     YTMIShowMessage(player, [NSString stringWithFormat:@"%@ started. Progress will be shown inside Music.", importID]);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSMutableDictionary *metadata = [YTMIMetadataForLibraryItem(item) mutableCopy];
@@ -360,7 +360,7 @@ static void YTMISubmitDownload(YTPlayerViewController *player, UIAlertController
 
 static void YTMIPresentImport(YTPlayerViewController *player) {
     if (!player) return;
-    UIAlertController *form = [UIAlertController alertControllerWithTitle:@"YT Music Importer — Beta 49 Test" message:@"Diagnostic logging is always on. Every import gets a random Import ID. The log contains fixed stage names only, without song names, paths, account, or device data." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *form = [UIAlertController alertControllerWithTitle:@"YT Music Importer — Beta 50 Test" message:@"Diagnostic logging is always on. Every import gets a random Import ID. The log contains fixed stage names only, without song names, paths, account, or device data." preferredStyle:UIAlertControllerStyleAlert];
     [form addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Title"; }];
     [form addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Artist"; }];
     [form addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Album (optional)"; }];
@@ -392,9 +392,9 @@ static void YTMIPresentImport(YTPlayerViewController *player) {
     %orig;
     YTMIActivePlayer = self;
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    if (![defaults boolForKey:@"YTMusicImporterBeta49NoticeShown"]) {
-        [defaults setBool:YES forKey:@"YTMusicImporterBeta49NoticeShown"];
-        YTMIShowMessage(self, @"Test build — Beta 49. Diagnostic logging is always on; no private song, path, account, or device data is written.");
+    if (![defaults boolForKey:@"YTMusicImporterBeta50NoticeShown"]) {
+        [defaults setBool:YES forKey:@"YTMusicImporterBeta50NoticeShown"];
+        YTMIShowMessage(self, @"Test build — Beta 50. Diagnostic logging is always on; no private song, path, account, or device data is written.");
     }
 }
 %end
@@ -432,11 +432,11 @@ static void YTMIPresentImport(YTPlayerViewController *player) {
     NSString *enabledKey = [NSString stringWithFormat:@"YTVideoOverlay-%@-Enabled", YTMIOverlayKey];
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if ([defaults objectForKey:enabledKey] == nil) [defaults setBool:YES forKey:enabledKey];
-    if (![defaults boolForKey:@"YTMusicImporterBeta49LogInitialized"]) {
+    if (![defaults boolForKey:@"YTMusicImporterBeta50LogInitialized"]) {
         [NSFileManager.defaultManager removeItemAtPath:YTMILogPath() error:nil];
-        [defaults setBool:YES forKey:@"YTMusicImporterBeta49LogInitialized"];
+        [defaults setBool:YES forKey:@"YTMusicImporterBeta50LogInitialized"];
     }
-    YTMILogStage(@"build.beta49.loaded");
+    YTMILogStage(@"build.beta50.loaded");
     YTMISetSABRLogger(^(NSString *stage) { YTMILogStage(stage); });
     YTMIInstallSABRCapture();
     initYTVideoOverlay(YTMIOverlayKey, @{AccessibilityLabelKey:@"YT Music Importer", SelectorKey:@"ytmi_buttonPressed:"});
