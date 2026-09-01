@@ -32,3 +32,9 @@ Applicable license notices are preserved with the project and package.
 - Sources: public iOS 10, iOS 14, iOS 15.5, and iOS 17 runtime headers, plus public iOS 17.6 reverse-engineered interface output.
 - Use: verify the cross-version selector and callback contract of `SSImportDownloadToIPodLibraryRequest`.
 - No Apple implementation source is copied; the project invokes the runtime interface independently.
+
+
+## MusicLibrary runtime interface research
+
+- Public `ML3MusicLibrary` and `ML3Track` runtime headers, plus public reverse-engineered interface output, were used to identify the library-owned record/location transaction contract used by Beta 48.
+- No Apple implementation source is redistributed. The importer is an independent implementation that resolves available runtime selectors dynamically and verifies the resulting local file-backed record.
