@@ -322,17 +322,44 @@ static void YTMIRollBackImport(Class trackClass, unsigned long long trackID,
         for (MPMediaItem *item in songs.items ?: @[]) {
             if (item.persistentID == persistentID) { songVisible = YES; break; }
         }
-        if (freshTrack && recordVisible && pathPlayable && songVisible) break;
+        if (freshTrack && pathPlayable && songVisible) break;
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.10]];
     } while (deadline.timeIntervalSinceNow > 0);
     if (!recordExists) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(105, @"Music did not retain the created record."); return NO; }
-    if (!recordVisible) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(106, @"Music retained the record but did not expose it in the library."); return NO; }
     if (!freshTrack) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(107, @"Music could not reopen the created record."); return NO; }
     if (![resolvedPath isKindOfClass:NSString.class] || !resolvedPath.length) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(108, @"Music did not retain the local audio location."); return NO; }
     if (!pathReadable) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(109, @"Music retained an unreadable local audio location."); return NO; }
     if (!pathPlayable) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(110, @"Music retained the record, but its local audio is not playable."); return NO; }
-    YTMITrace(trace, @"music.record.visible");
-    if (!songVisible) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(119, @"Music retained the record but excluded it from the Songs library."); return NO; }
+    if (!songVisible) {
+        id baseLocation = ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, NSSelectorFromString(@"valueForProperty:"), YTMIProperty(music, "ML3TrackPropertyBaseLocationID", @"base_location_id"));
+        NSString *playableProperty = YTMIProperty(music, "ML3TrackPropertyIsPlayable", nil);
+        NSString *rentalProperty = YTMIProperty(music, "ML3TrackPropertyIsRental", nil);
+        id musicPlayable = playableProperty.length ? ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, NSSelectorFromString(@"valueForProperty:"), playableProperty) : nil;
+        id musicRental = rentalProperty.length ? ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, NSSelectorFromString(@"valueForProperty:"), rentalProperty) : nil;
+        NSInteger filterCode = 119;
+        NSString *filterMessage = @"Music retained the record but excluded it from the Songs library.";
+        if (![baseLocation respondsToSelector:@selector(longLongValue)] || [baseLocation longLongValue] <= 0) {
+            YTMITrace(trace, @"music.filter.base-location.failed");
+            filterCode = 121;
+            filterMessage = @"Music did not classify the copied file as a local asset.";
+        } else if ([musicPlayable respondsToSelector:@selector(boolValue)] && ![musicPlayable boolValue]) {
+            YTMITrace(trace, @"music.filter.playable.failed");
+            filterCode = 122;
+            filterMessage = @"Music's own library predicate did not classify the local asset as playable.";
+        } else if ([musicRental respondsToSelector:@selector(boolValue)] && [musicRental boolValue]) {
+            YTMITrace(trace, @"music.filter.rental.failed");
+            filterCode = 123;
+            filterMessage = @"Music incorrectly classified the local asset as a rental.";
+        } else if (!recordVisible) {
+            YTMITrace(trace, @"music.filter.system.failed");
+            filterCode = 124;
+            filterMessage = @"A Music system-library filter excluded the local record.";
+        }
+        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
+        if (error) *error = YTMIError(filterCode, filterMessage);
+        return NO;
+    }
+    if (recordVisible) YTMITrace(trace, @"music.generic-filter.match");
     YTMITrace(trace, @"music.songs-query.match");
 
     SEL valueSEL = NSSelectorFromString(@"valueForProperty:");
