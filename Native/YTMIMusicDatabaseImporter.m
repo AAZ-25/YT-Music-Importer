@@ -56,7 +56,7 @@ static NSSet *YTMICompletedIDs(NSString *title, NSString *album) {
     if (![[NSFileManager defaultManager] fileExistsAtPath:path]) path = [@"/private" stringByAppendingString:path];
     if (sqlite3_open_v2(path.UTF8String, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, NULL) != SQLITE_OK) { if (db) sqlite3_close(db); return nil; }
     sqlite3_busy_timeout(db, 1500);
-    const char *sql = "SELECT e.item_pid FROM item_extra e JOIN item i USING(item_pid) JOIN album a ON a.album_pid=i.album_pid JOIN item_stats s USING(item_pid) WHERE e.title=? AND a.album=? AND e.location<>'' AND s.is_downloading=0";
+    const char *sql = "SELECT e.item_pid FROM item_extra e JOIN item i USING(item_pid) JOIN album a ON a.album_pid=i.album_pid WHERE e.title=? AND a.album=? AND e.location IS NOT NULL AND length(e.location)>0";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) { sqlite3_close(db); return nil; }
     sqlite3_bind_text(stmt, 1, title.UTF8String, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 2, album.UTF8String, -1, SQLITE_TRANSIENT);
