@@ -56,7 +56,7 @@ jobs:
         run: |
           DEB="$(find packages -name '*.deb' -type f | head -n 1)"
           test -n "$DEB"
-          test "$(dpkg-deb -f "$DEB" Version)" = "0.2.0~beta45"
+          test "$(dpkg-deb -f "$DEB" Version)" = "0.2.0~beta46"
           LIST="$(dpkg-deb -c "$DEB")"
           ! echo "$LIST" | grep -Eq 'ytmusicimporterd|ytmi-python|Python.framework|yt-dlp|MRYIPC|LaunchDaemons/com.aaz.ytmusicimporterd'
           echo "$LIST" | grep -q 'YTKACE-LICENSE'
@@ -76,8 +76,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete v0.2.0-beta45 --cleanup-tag --yes >/dev/null 2>&1 || true
-          gh release create v0.2.0-beta45 'YT-Music-Importer-rootless.deb#YT Music Importer rootless DEB' --target "$GITHUB_SHA" --title 'YT Music Importer Beta 45' --prerelease --notes 'Test build with coordinated import deadlines with live privacy-safe progress.'
+          gh release delete v0.2.0-beta46 --cleanup-tag --yes >/dev/null 2>&1 || true
+          gh release create v0.2.0-beta46 'YT-Music-Importer-rootless.deb#YT Music Importer rootless DEB' --target "$GITHUB_SHA" --title 'YT Music Importer Beta 46' --prerelease --notes 'Test build with automatic local Music import with in-app privacy-safe progress.'
       - name: Cleanup
         if: success()
         env:

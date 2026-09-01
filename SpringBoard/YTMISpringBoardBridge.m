@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <dlfcn.h>
 #import <objc/message.h>
@@ -9,6 +10,49 @@
 static NSString * const YTMIRequestNotification = @"com.aaz.ytmusicimporter.request";
 static NSString * const YTMIMusicRequestNotification = @"com.aaz.ytmusicimporter.music.request";
 static NSString * const YTMISharedRoot = @"/var/mobile/Media/YTMusicImporter";
+
+static UIAlertController *YTMIProgressAlert = nil;
+static NSTimer *YTMIProgressTimer = nil;
+static NSDate *YTMIProgressStarted = nil;
+
+static UIViewController *YTMIVisibleController(UIViewController *controller) {
+    if (!controller) return nil;
+    if (controller.presentedViewController && !controller.presentedViewController.isBeingDismissed) return YTMIVisibleController(controller.presentedViewController);
+    if ([controller isKindOfClass:UINavigationController.class]) return YTMIVisibleController(((UINavigationController *)controller).visibleViewController);
+    if ([controller isKindOfClass:UITabBarController.class]) return YTMIVisibleController(((UITabBarController *)controller).selectedViewController);
+    return controller;
+}
+
+static UIViewController *YTMIMusicPresenter(void) {
+    UIWindow *window = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *candidate in ((UIWindowScene *)scene).windows) if (candidate.isKeyWindow) { window = candidate; break; }
+        if (window) break;
+    }
+    return YTMIVisibleController(window.rootViewController);
+}
+
+static void YTMIPresentMusicProgress(NSString *importID) {
+    UIViewController *presenter = YTMIMusicPresenter();
+    if (!presenter) return;
+    YTMIProgressStarted = NSDate.date;
+    YTMIProgressAlert = [UIAlertController alertControllerWithTitle:@"YT Music Importer — Beta 46" message:[NSString stringWithFormat:@"%@\nPreparing local import\nElapsed: 00:00", importID] preferredStyle:UIAlertControllerStyleAlert];
+    [presenter presentViewController:YTMIProgressAlert animated:YES completion:nil];
+    YTMIProgressTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(__unused NSTimer *timer) {
+        NSInteger elapsed = MAX(0, (NSInteger)-[YTMIProgressStarted timeIntervalSinceNow]);
+        NSString *phase = elapsed < 5 ? @"Preparing local import" : (elapsed < 115 ? @"Importing into Music" : @"Final verification");
+        YTMIProgressAlert.message = [NSString stringWithFormat:@"%@\n%@\nElapsed: %02ld:%02ld\nMaximum: 02:30", importID, phase, (long)(elapsed / 60), (long)(elapsed % 60)];
+    }];
+}
+
+static void YTMIDismissMusicProgress(void) {
+    [YTMIProgressTimer invalidate];
+    YTMIProgressTimer = nil;
+    YTMIProgressStarted = nil;
+    [YTMIProgressAlert dismissViewControllerAnimated:YES completion:nil];
+    YTMIProgressAlert = nil;
+}
 
 static BOOL YTMIIsMusicProcess(void) { NSString *name = NSProcessInfo.processInfo.processName ?: @""; return [@[@"MobileMusicPlayer", @"Music~iphone", @"Music~ipad", @"Music"] containsObject:name]; }
 static NSString *YTMIYouTubeContainerPath(void) {
@@ -22,22 +66,25 @@ static NSString *YTMIFindJobDirectory(void) {
     NSString *root=@"/var/mobile/Containers/Data/Application";for(NSString *child in [fm contentsOfDirectoryAtPath:root error:nil]?:@[]){NSString *p=[[root stringByAppendingPathComponent:child]stringByAppendingPathComponent:@"Library/Caches/YTMusicImporter"];if([fm fileExistsAtPath:[p stringByAppendingPathComponent:@"pending.plist"]])return p;}return nil;
 }
 static BOOL YTMIValidSource(NSString *path,NSString *directory){NSString *suffix=@"/Library/Caches/YTMusicImporter";if(!path.length||![directory hasSuffix:suffix])return NO;NSString *container=[directory substringToIndex:directory.length-suffix.length];return [path.stringByStandardizingPath hasPrefix:[container.stringByStandardizingPath stringByAppendingString:@"/"]];}
-static void YTMIWriteYouTubeResult(NSString *directory,NSString *nonce,NSString *importID,BOOL success,NSInteger code,NSArray *trace){if(directory.length&&nonce.length)[@{@"nonce":nonce,@"success":@(success),@"code":@(code),YTMIJobImportIDKey:importID?:@"B43-UNKNOWN",@"trace":trace?:@[]}writeToFile:[directory stringByAppendingPathComponent:@"result.plist"]atomically:YES];}
+static void YTMIWriteYouTubeResult(NSString *directory,NSString *nonce,NSString *importID,BOOL success,NSInteger code,NSArray *trace){if(directory.length&&nonce.length)[@{@"nonce":nonce,@"success":@(success),@"code":@(code),YTMIJobImportIDKey:importID?:@"B46-UNKNOWN",@"trace":trace?:@[]}writeToFile:[directory stringByAppendingPathComponent:@"result.plist"]atomically:YES];}
 static void YTMILaunchMusic(void){dlopen("/System/Library/Frameworks/MobileCoreServices.framework/MobileCoreServices",RTLD_LAZY|RTLD_LOCAL);Class cls=NSClassFromString(@"LSApplicationWorkspace");SEL d=NSSelectorFromString(@"defaultWorkspace"),o=NSSelectorFromString(@"openApplicationWithBundleID:");if(cls&&[cls respondsToSelector:d]){id ws=((id(*)(id,SEL))objc_msgSend)(cls,d);if(ws&&[ws respondsToSelector:o])((BOOL(*)(id,SEL,id))objc_msgSend)(ws,o,@"com.apple.Music");}}
 static void YTMIHandleMusicRequest(void) {
     @autoreleasepool {@synchronized(YTMIMusicDatabaseImporter.class) {
         NSString *pending=[YTMISharedRoot stringByAppendingPathComponent:@"pending.plist"],*resultPath=[YTMISharedRoot stringByAppendingPathComponent:@"music-result.plist"];
-        NSDictionary *job=[NSDictionary dictionaryWithContentsOfFile:pending]; NSString *nonce=[job[@"nonce"]isKindOfClass:NSString.class]?job[@"nonce"]:nil; NSString *audio=[job[@"audioPath"]isKindOfClass:NSString.class]?job[@"audioPath"]:nil; NSString *importID=[job[YTMIJobImportIDKey]isKindOfClass:NSString.class]?job[YTMIJobImportIDKey]:@"B43-UNKNOWN";
+        NSDictionary *job=[NSDictionary dictionaryWithContentsOfFile:pending]; NSString *nonce=[job[@"nonce"]isKindOfClass:NSString.class]?job[@"nonce"]:nil; NSString *audio=[job[@"audioPath"]isKindOfClass:NSString.class]?job[@"audioPath"]:nil; NSString *importID=[job[YTMIJobImportIDKey]isKindOfClass:NSString.class]?job[YTMIJobImportIDKey]:@"B46-UNKNOWN";
         if(!nonce.length||![audio.stringByStandardizingPath hasPrefix:[YTMISharedRoot stringByAppendingString:@"/"]]||![NSFileManager.defaultManager fileExistsAtPath:audio])return;
         NSMutableArray *trace=[NSMutableArray arrayWithObjects:@"music.request.received",@"music.source.valid",nil]; NSDictionary *metadata=@{YTMIJobTitleKey:[job[@"title"]isKindOfClass:NSString.class]?job[@"title"]:@"",YTMIJobArtistKey:[job[@"artist"]isKindOfClass:NSString.class]?job[@"artist"]:@"",YTMIJobAlbumKey:[job[@"album"]isKindOfClass:NSString.class]?job[@"album"]:@""};
-        NSError *importError=nil; BOOL success=[[YTMIMusicDatabaseImporter new]importAudioAtURL:[NSURL fileURLWithPath:audio]metadata:metadata trace:trace error:&importError]; NSInteger code=success?0:([importError.domain isEqualToString:@"com.aaz.ytmusicimporter"]&&importError.code>0?importError.code:44);
+        YTMIPresentMusicProgress(importID);
+        NSError *importError=nil; BOOL success=[[YTMIMusicDatabaseImporter new]importAudioAtURL:[NSURL fileURLWithPath:audio]metadata:metadata trace:trace error:&importError];
+        YTMIDismissMusicProgress();
+        NSInteger code=success?0:([importError.domain isEqualToString:@"com.aaz.ytmusicimporter"]&&importError.code>0?importError.code:44);
         [trace addObject:success?@"music.import.accepted":[NSString stringWithFormat:@"music.import.failed.%ld",(long)code]];
         [@{@"nonce":nonce,@"success":@(success),@"code":@(code),YTMIJobImportIDKey:importID,@"trace":trace}writeToFile:resultPath atomically:YES]; [NSFileManager.defaultManager removeItemAtPath:pending error:nil];
     }}
 }
 static void YTMIRelayFromSpringBoard(void) {
     @autoreleasepool {@synchronized(YTMIMusicDatabaseImporter.class) {
-        NSString *directory=YTMIFindJobDirectory(); if(!directory.length)return; NSDictionary *job=[NSDictionary dictionaryWithContentsOfFile:[directory stringByAppendingPathComponent:@"pending.plist"]]; NSString *nonce=[job[@"nonce"]isKindOfClass:NSString.class]?job[@"nonce"]:nil; NSString *audio=[job[@"audioPath"]isKindOfClass:NSString.class]?job[@"audioPath"]:nil; NSString *importID=[job[YTMIJobImportIDKey]isKindOfClass:NSString.class]?job[YTMIJobImportIDKey]:@"B43-UNKNOWN"; NSMutableArray *trace=[NSMutableArray arrayWithObject:@"bridge.request.received"];
+        NSString *directory=YTMIFindJobDirectory(); if(!directory.length)return; NSDictionary *job=[NSDictionary dictionaryWithContentsOfFile:[directory stringByAppendingPathComponent:@"pending.plist"]]; NSString *nonce=[job[@"nonce"]isKindOfClass:NSString.class]?job[@"nonce"]:nil; NSString *audio=[job[@"audioPath"]isKindOfClass:NSString.class]?job[@"audioPath"]:nil; NSString *importID=[job[YTMIJobImportIDKey]isKindOfClass:NSString.class]?job[YTMIJobImportIDKey]:@"B46-UNKNOWN"; NSMutableArray *trace=[NSMutableArray arrayWithObject:@"bridge.request.received"];
         if(!nonce.length||!YTMIValidSource(audio,directory)||![NSFileManager.defaultManager fileExistsAtPath:audio]){[trace addObject:@"bridge.source.invalid"];if(nonce.length)YTMIWriteYouTubeResult(directory,nonce,importID,NO,43,trace);return;}[trace addObject:@"bridge.source.valid"];
         NSFileManager *fm=NSFileManager.defaultManager;[fm createDirectoryAtPath:YTMISharedRoot withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil];NSString *copy=[YTMISharedRoot stringByAppendingPathComponent:[nonce stringByAppendingPathExtension:@"m4a"]];[fm removeItemAtPath:copy error:nil];if(![fm copyItemAtPath:audio toPath:copy error:nil]){[trace addObject:@"bridge.staging.failed"];YTMIWriteYouTubeResult(directory,nonce,importID,NO,38,trace);return;}chmod(copy.fileSystemRepresentation,0644);[trace addObject:@"bridge.staging.complete"];
         NSString *sharedResult=[YTMISharedRoot stringByAppendingPathComponent:@"music-result.plist"],*sharedPending=[YTMISharedRoot stringByAppendingPathComponent:@"pending.plist"];[fm removeItemAtPath:sharedResult error:nil];NSDictionary *shared=@{@"nonce":nonce,@"audioPath":copy,YTMIJobImportIDKey:importID,@"title":[job[@"title"]isKindOfClass:NSString.class]?job[@"title"]:@"",@"artist":[job[@"artist"]isKindOfClass:NSString.class]?job[@"artist"]:@"",@"album":[job[@"album"]isKindOfClass:NSString.class]?job[@"album"]:@""};[shared writeToFile:sharedPending atomically:YES];chmod(sharedPending.fileSystemRepresentation,0644);YTMILaunchMusic();

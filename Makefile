@@ -32,7 +32,7 @@ YTMIMusicBridge_CFLAGS = -fobjc-arc \
 	-include objc/runtime.h \
 	-I$(THEOS_PROJECT_DIR)/Shared \
 	-I$(THEOS_PROJECT_DIR)/Native
-YTMIMusicBridge_FRAMEWORKS = Foundation AVFoundation AudioToolbox CoreMedia CoreFoundation
+YTMIMusicBridge_FRAMEWORKS = UIKit Foundation AVFoundation AudioToolbox CoreMedia CoreFoundation
 YTMIMusicBridge_LIBRARIES = sqlite3
 
 include $(THEOS_MAKE_PATH)/tweak.mk

@@ -44,6 +44,18 @@ static BOOL YTMISetObject(id target, NSString *setter, id value) {
     return YES;
 }
 
+static BOOL YTMISetBool(id target, NSString *setter, BOOL value) {
+    if (!YTMISelector(target, setter, 1)) return NO;
+    ((void (*)(id, SEL, BOOL))objc_msgSend)(target, NSSelectorFromString(setter), value);
+    return YES;
+}
+
+static BOOL YTMISetUnsignedLongLong(id target, NSString *setter, unsigned long long value) {
+    if (!YTMISelector(target, setter, 1)) return NO;
+    ((void (*)(id, SEL, unsigned long long))objc_msgSend)(target, NSSelectorFromString(setter), value);
+    return YES;
+}
+
 static NSArray *YTMIQueueDownloads(id queue) {
     if (!YTMISelector(queue, @"downloads", 0)) return nil;
     id value = ((id (*)(id, SEL))objc_msgSend)(queue, NSSelectorFromString(@"downloads"));
@@ -97,43 +109,49 @@ static NSString *YTMIProperty(void *framework, const char *symbol) {
 
     id storeMetadata = YTMINewObject(metadataClass, @"initWithKind:", @"song");
     NSNumber *duration = @((long long)llround(CMTimeGetSeconds(sourceAsset.duration) * 1000.0));
-    BOOL metadataOK = storeMetadata && YTMISetObject(storeMetadata, @"setTitle:", title) && YTMISetObject(storeMetadata, @"setArtistName:", artist) && YTMISetObject(storeMetadata, @"setCollectionName:", album) && YTMISetObject(storeMetadata, @"setDurationInMilliseconds:", duration) && YTMISetObject(storeMetadata, @"setFileExtension:", @"m4a") && YTMISetObject(storeMetadata, @"setPrimaryAssetURL:", audioURL);
+    unsigned long long itemIdentifier = ((unsigned long long)arc4random() << 32) | arc4random();
+    if (!itemIdentifier) itemIdentifier = 1;
+    BOOL metadataOK = storeMetadata &&
+        YTMISetObject(storeMetadata, @"setTitle:", title) &&
+        YTMISetObject(storeMetadata, @"setArtistName:", artist) &&
+        YTMISetObject(storeMetadata, @"setCollectionName:", album) &&
+        YTMISetObject(storeMetadata, @"setDurationInMilliseconds:", duration) &&
+        YTMISetObject(storeMetadata, @"setFileExtension:", @"m4a") &&
+        YTMISetObject(storeMetadata, @"setPrimaryAssetURL:", audioURL) &&
+        YTMISetObject(storeMetadata, @"setPurchaseDate:", NSDate.date) &&
+        YTMISetUnsignedLongLong(storeMetadata, @"setItemIdentifier:", itemIdentifier) &&
+        YTMISetBool(storeMetadata, @"setRedownloadDownload:", YES) &&
+        YTMISetBool(storeMetadata, @"setShouldDownloadAutomatically:", YES);
     if (!metadataOK) { if (error) *error = YTMIError(84, @"Music rejected the import metadata interface."); return NO; }
     id download = YTMINewObject(downloadClass, @"initWithDownloadMetadata:", storeMetadata);
     id kinds = YTMISelector(queueClass, @"mediaDownloadKinds", 0) ? ((id (*)(id, SEL))objc_msgSend)(queueClass, NSSelectorFromString(@"mediaDownloadKinds")) : nil;
     id queue = YTMINewObject(queueClass, @"initWithDownloadKinds:", kinds);
     if (!download || !queue || !YTMISelector(queue, @"addDownload:", 1) || !YTMISelector(queue, @"downloads", 0)) { if (error) *error = YTMIError(85, @"Music could not create its import queue."); return NO; }
     if (YTMISelector(queue, @"setShouldAutomaticallyFinishDownloads:", 1)) ((void (*)(id, SEL, BOOL))objc_msgSend)(queue, NSSelectorFromString(@"setShouldAutomaticallyFinishDownloads:"), YES);
-    ((void (*)(id, SEL, id))objc_msgSend)(queue, NSSelectorFromString(@"addDownload:"), download);
+    BOOL queueAccepted = ((BOOL (*)(id, SEL, id))objc_msgSend)(queue, NSSelectorFromString(@"addDownload:"), download);
+    if (!queueAccepted) { if (error) *error = YTMIError(85, @"Music rejected the import queue request."); return NO; }
     YTMITrace(trace, @"music.queue.accepted");
 
-    BOOL observed = NO, finished = NO;
+    NSNumber *persistentID = nil;
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:120.0];
-    while (deadline.timeIntervalSinceNow > 0) {
+    while (deadline.timeIntervalSinceNow > 0 && !persistentID) {
         if (YTMISelector(download, @"failureError", 0)) {
             id failure = ((id (*)(id, SEL))objc_msgSend)(download, NSSelectorFromString(@"failureError"));
             if ([failure isKindOfClass:NSError.class]) { if (error) *error = YTMIError(86, @"Music's import service rejected the audio."); return NO; }
         }
-        NSArray *downloads = YTMIQueueDownloads(queue);
-        if (!downloads) { if (error) *error = YTMIError(87, @"Music's import queue became unavailable."); return NO; }
-        BOOL present = [downloads containsObject:download];
-        if (present) observed = YES;
-        if (observed && !present) { finished = YES; break; }
-        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.20]];
-    }
-    if (!finished) { if (YTMISelector(queue, @"cancelDownload:", 1)) ((void (*)(id, SEL, id))objc_msgSend)(queue, NSSelectorFromString(@"cancelDownload:"), download); if (error) *error = YTMIError(88, @"Music did not finish the import in time."); return NO; }
-    YTMITrace(trace, @"music.queue.finished");
-
-    NSNumber *persistentID = nil;
-    for (NSUInteger attempt = 0; attempt < 40 && !persistentID; attempt++) {
+        if (!YTMIQueueDownloads(queue)) { if (error) *error = YTMIError(87, @"Music's import queue became unavailable."); return NO; }
         NSSet *after = YTMICompletedIDs(title, album);
         NSMutableSet *created = after ? [after mutableCopy] : nil;
-        [created minusSet:before]; persistentID = created.anyObject;
-        if (!persistentID) [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.25]];
+        [created minusSet:before];
+        persistentID = created.anyObject;
+        if (!persistentID) [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.20]];
     }
-    if (!persistentID) { if (error) *error = YTMIError(89, @"Music created no complete local track."); return NO; }
+    if (!persistentID) {
+        if (YTMISelector(queue, @"cancelDownload:", 1)) ((void (*)(id, SEL, id))objc_msgSend)(queue, NSSelectorFromString(@"cancelDownload:"), download);
+        if (error) *error = YTMIError(88, @"Music created no local record before the deadline.");
+        return NO;
+    }
     YTMITrace(trace, @"music.record.created");
-
     void *music = dlopen("/System/Library/PrivateFrameworks/MusicLibrary.framework/MusicLibrary", RTLD_NOW | RTLD_LOCAL);
     Class libraryClass = NSClassFromString(@"ML3MusicLibrary"), trackClass = NSClassFromString(@"ML3Track");
     id library = libraryClass && YTMISelector(libraryClass, @"sharedLibrary", 0) ? ((id (*)(id, SEL))objc_msgSend)(libraryClass, NSSelectorFromString(@"sharedLibrary")) : nil;
