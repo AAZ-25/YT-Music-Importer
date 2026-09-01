@@ -45,3 +45,10 @@ Applicable license notices are preserved with the project and package.
 - Reference commits: `95df6b804bee0e01538eb2ddad0413609938d063` and `e26ed4563f78871c59d2d96856756a65d62517e5`.
 - Use: verify song media type, audio-format metadata, post-location library membership, visibility checks, and rollback behavior.
 - No Apple implementation source is copied or redistributed; the importer implements the observed contract independently through runtime-resolved interfaces.
+
+### MusicLibrary artist and album relationship research
+
+- Source: public reverse-engineered iOS 18.2 `ML3Track`, `ML3Artist`, `ML3Album`, and `ML3Entity` interfaces and implementations.
+- Reference commit: `e26ed4563f78871c59d2d96856756a65d62517e5`.
+- Use: verify that track artist and album names are joined collection values backed by `item_artist_pid` and `album_pid`, and that the collection entities have their own persistent records.
+- No Apple implementation source is copied or redistributed; Beta 52 independently creates and verifies the required runtime relationships.
