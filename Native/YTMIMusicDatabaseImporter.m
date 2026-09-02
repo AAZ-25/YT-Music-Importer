@@ -46,13 +46,20 @@ static void YTMISetOptionalValue(NSMutableDictionary *values, void *framework, c
 }
 
 static NSNumber *YTMIInternalMusicMediaType(void) {
-    void *mediaPlayer = dlopen("/System/Library/Frameworks/MediaPlayer.framework/MediaPlayer", RTLD_NOW | RTLD_LOCAL);
-    void *symbol = mediaPlayer ? dlsym(mediaPlayer, "MLMediaTypeForMPMediaType") : NULL;
-    if (!symbol) symbol = dlsym(RTLD_DEFAULT, "MLMediaTypeForMPMediaType");
-    if (!symbol) return nil;
-
-    NSUInteger internalValue = ((NSUInteger (*)(NSUInteger))symbol)((NSUInteger)MPMediaTypeMusic);
-    return internalValue ? @(internalValue) : nil;
+    @try {
+        MPMediaPropertyPredicate *publicPredicate =
+            [MPMediaPropertyPredicate predicateWithValue:@(MPMediaTypeMusic)
+                                             forProperty:@"mediaType"];
+        if (!YTMISelector(publicPredicate, @"ML3PredicateForTrack", 0)) return nil;
+        id internalPredicate = ((id (*)(id, SEL))objc_msgSend)(
+            publicPredicate, NSSelectorFromString(@"ML3PredicateForTrack"));
+        if (!YTMISelector(internalPredicate, @"value", 0)) return nil;
+        id value = ((id (*)(id, SEL))objc_msgSend)(internalPredicate, NSSelectorFromString(@"value"));
+        if (![value respondsToSelector:@selector(unsignedIntegerValue)]) return nil;
+        NSUInteger internalValue = [value unsignedIntegerValue];
+        return internalValue ? @(internalValue) : nil;
+    } @catch (__unused NSException *exception) {}
+    return nil;
 }
 
 static NSString *YTMIMediaFolder(id library) {
@@ -179,15 +186,15 @@ static void YTMIRollBackImport(Class trackClass, unsigned long long trackID,
     if (!library) { if (error) *error = YTMIError(97, @"Music's local library could not be opened."); return NO; }
     YTMITrace(trace, @"music.local-api.available");
 
-    // MediaPlayer translates its public MPMediaType value before comparing it
-    // with MusicLibrary's internal ML3TrackPropertyMediaType. Never write the
-    // public enum directly into the internal property.
+    // Ask MediaPlayer to build its internal track predicate and read the
+    // converted value back from that predicate. The conversion function is
+    // not required to be exported as a directly resolvable C symbol.
     NSNumber *internalMusicMediaType = YTMIInternalMusicMediaType();
     if (!internalMusicMediaType) {
         if (error) *error = YTMIError(132, @"Music's internal media-type mapping is unavailable.");
         return NO;
     }
-    YTMITrace(trace, @"music.media-type.mapping.available");
+    YTMITrace(trace, @"music.media-type.predicate-mapping.available");
 
     NSString *mediaFolder = YTMIMediaFolder(library);
     NSError *fileError = nil;
