@@ -82,6 +82,36 @@ static void YTMINotifyLibrary(id library) {
     }
 }
 
+static BOOL YTMIQueryContainsTrack(unsigned long long persistentID,
+                                   BOOL ignoreSystemFilters,
+                                   BOOL ignoreRestrictions,
+                                   NSString *property,
+                                   id value) {
+    @try {
+        MPMediaQuery *query = [MPMediaQuery songsQuery];
+        if (!query) return NO;
+        if (ignoreSystemFilters && YTMISelector(query, @"setIgnoreSystemFilterPredicates:", 1)) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(query, NSSelectorFromString(@"setIgnoreSystemFilterPredicates:"), YES);
+        }
+        if (ignoreRestrictions && YTMISelector(query, @"setIgnoreRestrictionsPredicates:", 1)) {
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(query, NSSelectorFromString(@"setIgnoreRestrictionsPredicates:"), YES);
+        }
+        [query addFilterPredicate:[MPMediaPropertyPredicate predicateWithValue:@(persistentID)
+            forProperty:MPMediaItemPropertyPersistentID]];
+        if (property.length && value) {
+            [query addFilterPredicate:[MPMediaPropertyPredicate predicateWithValue:value forProperty:property]];
+        }
+        for (MPMediaItem *item in query.items ?: @[]) {
+            if (item.persistentID == persistentID) return YES;
+        }
+    } @catch (__unused NSException *exception) {}
+    return NO;
+}
+
+static void YTMITraceCheck(NSMutableArray *trace, NSString *name, BOOL matched) {
+    YTMITrace(trace, [NSString stringWithFormat:@"music.filter.%@.%@", name, matched ? @"match" : @"failed"]);
+}
+
 static void YTMIRollBackEntity(Class entityClass, id library, unsigned long long persistentID) {
     if (persistentID && YTMISelector(entityClass, @"deleteFromLibrary:deletionType:persistentIDs:count:", 4)) {
         int64_t identifier = (int64_t)persistentID;
@@ -331,29 +361,42 @@ static void YTMIRollBackImport(Class trackClass, unsigned long long trackID,
     if (!pathReadable) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(109, @"Music retained an unreadable local audio location."); return NO; }
     if (!pathPlayable) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(110, @"Music retained the record, but its local audio is not playable."); return NO; }
     if (!songVisible) {
-        id baseLocation = ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, NSSelectorFromString(@"valueForProperty:"), YTMIProperty(music, "ML3TrackPropertyBaseLocationID", @"base_location_id"));
-        NSString *playableProperty = YTMIProperty(music, "ML3TrackPropertyIsPlayable", nil);
-        NSString *rentalProperty = YTMIProperty(music, "ML3TrackPropertyIsRental", nil);
-        id musicPlayable = playableProperty.length ? ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, NSSelectorFromString(@"valueForProperty:"), playableProperty) : nil;
-        id musicRental = rentalProperty.length ? ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, NSSelectorFromString(@"valueForProperty:"), rentalProperty) : nil;
-        NSInteger filterCode = 119;
-        NSString *filterMessage = @"Music retained the record but excluded it from the Songs library.";
-        if (![baseLocation respondsToSelector:@selector(longLongValue)] || [baseLocation longLongValue] <= 0) {
-            YTMITrace(trace, @"music.filter.base-location.failed");
-            filterCode = 121;
-            filterMessage = @"Music did not classify the copied file as a local asset.";
-        } else if ([musicPlayable respondsToSelector:@selector(boolValue)] && ![musicPlayable boolValue]) {
-            YTMITrace(trace, @"music.filter.playable.failed");
-            filterCode = 122;
-            filterMessage = @"Music's own library predicate did not classify the local asset as playable.";
-        } else if ([musicRental respondsToSelector:@selector(boolValue)] && [musicRental boolValue]) {
-            YTMITrace(trace, @"music.filter.rental.failed");
-            filterCode = 123;
-            filterMessage = @"Music incorrectly classified the local asset as a rental.";
-        } else if (!recordVisible) {
-            YTMITrace(trace, @"music.filter.system.failed");
-            filterCode = 124;
-            filterMessage = @"A Music system-library filter excluded the local record.";
+        // Inspect the exact unrestricted Songs row first, then add each known
+        // MediaPlayer predicate independently. This keeps one failed filter
+        // from being hidden inside another generic code-124 result.
+        BOOL unrestrictedSong = YTMIQueryContainsTrack(persistentID, YES, YES, nil, nil);
+        BOOL restrictionsOnlySong = YTMIQueryContainsTrack(persistentID, YES, NO, nil, nil);
+        BOOL nonPurgeableSong = YTMIQueryContainsTrack(persistentID, YES, YES, @"hasNonPurgeableAsset", @YES);
+        BOOL playableSong = YTMIQueryContainsTrack(persistentID, YES, YES, @"isPlayable", @YES);
+        BOOL matchAudioSong = YTMIQueryContainsTrack(persistentID, YES, YES, @"isMatchAudio", @YES);
+        BOOL nonRentalSong = YTMIQueryContainsTrack(persistentID, YES, YES, @"isRental", @NO);
+        YTMITraceCheck(trace, @"unrestricted-songs", unrestrictedSong);
+        YTMITraceCheck(trace, @"restrictions-only", restrictionsOnlySong);
+        YTMITraceCheck(trace, @"non-purgeable", nonPurgeableSong);
+        YTMITraceCheck(trace, @"playable", playableSong);
+        YTMITraceCheck(trace, @"match-audio", matchAudioSong);
+        YTMITraceCheck(trace, @"non-rental", nonRentalSong);
+
+        NSInteger filterCode = 131;
+        NSString *filterMessage = @"Music's active system-filter selection excluded the local song.";
+        if (!unrestrictedSong) {
+            filterCode = 125;
+            filterMessage = @"Music excluded the record from the unrestricted Songs media classification.";
+        } else if (!restrictionsOnlySong) {
+            filterCode = 130;
+            filterMessage = @"Music's restrictions predicate excluded the local song.";
+        } else if (!nonRentalSong) {
+            filterCode = 129;
+            filterMessage = @"Music classified the local song as a rental.";
+        } else if (!playableSong) {
+            filterCode = 127;
+            filterMessage = @"Music's playability predicate excluded the local song.";
+        } else if (!nonPurgeableSong) {
+            filterCode = 126;
+            filterMessage = @"Music did not classify the local song as a non-purgeable asset.";
+        } else if (!matchAudioSong) {
+            filterCode = 128;
+            filterMessage = @"Music's match-audio predicate excluded the local song.";
         }
         YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
         if (error) *error = YTMIError(filterCode, filterMessage);
