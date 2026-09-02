@@ -41,17 +41,17 @@ Applicable license notices are preserved with the project and package.
 
 ### MediaPlayer local-song contract research
 
-- Sources: public iOS 18.1 MediaPlayer SDK headers and public reverse-engineered iOS 17.6.1 and iOS 18.2 MusicLibrary/MediaPlayer interfaces and implementations, including `MPMediaItem`, `MPMediaQuery`, `MPMediaPropertyPredicate`, `ML3ComparisonPredicate`, `ML3Track`, `ML3Entity`, and `MPMediaLibraryDataProviderML3`.
+- Sources: public iOS 18.1 MediaPlayer SDK headers and public reverse-engineered iOS 17.6.1 and iOS 18.2 MusicLibrary/MediaPlayer interfaces and implementations, including `MPMediaItem`, `MPMediaQuery`, `MPMediaPropertyPredicate`, `MPModelLibraryRequest`, `MPMediaLibrary`, `ML3ComparisonPredicate`, `ML3Collection`, `ML3Track`, `ML3Entity`, and `MPMediaLibraryDataProviderML3`.
 - Reference commits: `95df6b804bee0e01538eb2ddad0413609938d063` and `e26ed4563f78871c59d2d96856756a65d62517e5`.
 - SDK reference commits: `1b92ff4a8928f582876e1d388d1381c6a0c59eb9` from `xybp888/iOS-SDKs` and `0222fd5413cf4b9af096f37b4621afa2688572f7` from `theos/sdks`.
-- Use: verify the public `songsQuery` plus persistent-ID acceptance boundary, and verify that `MPMediaPropertyPredicate`'s `ML3PredicateForTrack` path performs the public-to-internal media-type conversion while the returned `ML3ComparisonPredicate` exposes the converted comparison `value`.
+- Use: verify the public-to-internal media-type conversion, MediaPlayer cache-reload contract, exact album membership, and the Music-facing `MPModelLibraryRequest` acceptance boundary.
 - No Apple implementation source is copied or redistributed; the importer independently invokes the available Objective-C predicate interfaces and does not directly resolve or copy the conversion function.
 
 ### MusicLibrary artist and album relationship research
 
-- Source: public reverse-engineered iOS 18.2 `ML3Track`, `ML3Artist`, `ML3Album`, and `ML3Entity` interfaces and implementations.
+- Source: public reverse-engineered iOS 18.2 `ML3Track`, `ML3Artist`, `ML3Album`, `ML3Collection`, and `ML3Entity` interfaces and implementations.
 - Reference commit: `e26ed4563f78871c59d2d96856756a65d62517e5`.
-- Use: verify that track artist and album names are joined collection values backed by `item_artist_pid` and `album_pid`, and that the collection entities have their own persistent records.
+- Use: verify that track artist and album names are joined collection values backed by `item_artist_pid` and `album_pid`, and that each collection's `updateTrackValues:` transaction normalizes the foreign keys and representative track.
 - No Apple implementation source is copied or redistributed; The importer independently creates and verifies the required runtime relationships.
 
 
