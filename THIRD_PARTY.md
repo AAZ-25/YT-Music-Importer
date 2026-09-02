@@ -62,3 +62,10 @@ Applicable license notices are preserved with the project and package.
 - Reference commits: `95df6b804bee0e01538eb2ddad0413609938d063` and `e26ed4563f78871c59d2d96856756a65d62517e5`.
 - Use: distinguish the generic `visibleInLibrary:` query and its mutable system filters from the explicit MediaPlayer `songsQuery` acceptance boundary, and classify only fixed privacy-safe failure stages.
 - No Apple implementation source is copied or redistributed.
+
+### Music client-import transaction research
+
+- Source: public reverse-engineered iOS 18.2 `ML3ClientImportSession`, `ML3ClientImportSessionConfiguration`, `ML3ClientImportItem`, `ML3ClientImportResult`, `MIPMediaItem`, `MIPSong`, `MIPArtist`, `MIPAlbum`, `MIPPlaybackInfo`, `MIPMultiverseIdentifier`, `IPodLibrary`, and `IPodLibraryML3TrackImporter` interfaces and implementations.
+- Reference commit: `e26ed4563f78871c59d2d96856756a65d62517e5`.
+- Use: distinguish daemon-only `IPodLibrary` helpers from the MusicLibrary client API that is callable from Music, then verify the supported XPC session lifecycle, MIP local-file payload, transaction-returned persistent-ID result, and exact final ownership states.
+- No Apple implementation source is copied or redistributed. Beta 60 independently constructs a minimal MIP payload, submits it through the runtime-checked client-import session, verifies the returned Music record, and retains its exact local ownership ID for safe cleanup.

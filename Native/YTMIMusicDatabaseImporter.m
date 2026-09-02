@@ -1,71 +1,75 @@
 #import "YTMIMusicDatabaseImporter.h"
 #import "YTMIConstants.h"
 #import <AVFoundation/AVFoundation.h>
-#import <CoreMedia/CoreMedia.h>
 #import <AudioToolbox/AudioToolbox.h>
+#import <CoreMedia/CoreMedia.h>
 #import <MediaPlayer/MediaPlayer.h>
 #import <dlfcn.h>
 #import <math.h>
 #import <objc/message.h>
+#import <sqlite3.h>
+#import <stdlib.h>
 
 static NSString * const YTMIErrorDomain = @"com.aaz.ytmusicimporter";
+static NSString * const YTMIOwnershipLedgerPath = @"/var/mobile/Media/YTMusicImporter/import-ownership.plist";
+static NSString * const YTMIMediaDatabasePath = @"/var/mobile/Media/iTunes_Control/iTunes/MediaLibrary.sqlitedb";
 
 static NSError *YTMIError(NSInteger code, NSString *message) {
-    return [NSError errorWithDomain:YTMIErrorDomain code:code userInfo:@{NSLocalizedDescriptionKey:message ?: @"Music import failed."}];
+    return [NSError errorWithDomain:YTMIErrorDomain code:code
+                           userInfo:@{NSLocalizedDescriptionKey:message ?: @"Music import failed."}];
 }
-
 static void YTMITrace(NSMutableArray *trace, NSString *stage) { if (trace && stage.length) [trace addObject:stage]; }
-
 static NSString *YTMISafeText(id value, NSString *fallback) {
     if (![value isKindOfClass:NSString.class]) return fallback;
     NSString *text = [(NSString *)value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     return text.length ? text : fallback;
 }
-
 static BOOL YTMISelector(id target, NSString *name, NSUInteger arguments) {
     SEL selector = NSSelectorFromString(name);
     if (!target || ![target respondsToSelector:selector]) return NO;
     NSMethodSignature *signature = [target methodSignatureForSelector:selector];
     return signature && signature.numberOfArguments == arguments + 2;
 }
-
+static id YTMINewObject(Class objectClass) {
+    if (!objectClass) return nil;
+    @try { return ((id (*)(id, SEL))objc_msgSend)(objectClass, @selector(new)); }
+    @catch (__unused NSException *exception) { return nil; }
+}
+static id YTMINewObject2(Class objectClass, NSString *initializer, id first, id second) {
+    if (!objectClass || !YTMISelector(objectClass, @"alloc", 0)) return nil;
+    id allocated = ((id (*)(id, SEL))objc_msgSend)(objectClass, @selector(alloc));
+    if (!YTMISelector(allocated, initializer, 2)) return nil;
+    @try { return ((id (*)(id, SEL, id, id))objc_msgSend)(allocated, NSSelectorFromString(initializer), first, second); }
+    @catch (__unused NSException *exception) { return nil; }
+}
+static BOOL YTMISetObject(id target, NSString *name, id value) {
+    if (!value || !YTMISelector(target, name, 1)) return NO;
+    @try { ((void (*)(id, SEL, id))objc_msgSend)(target, NSSelectorFromString(name), value); return YES; }
+    @catch (__unused NSException *exception) { return NO; }
+}
+static BOOL YTMISetBool(id target, NSString *name, BOOL value) {
+    if (!YTMISelector(target, name, 1)) return NO;
+    @try { ((void (*)(id, SEL, BOOL))objc_msgSend)(target, NSSelectorFromString(name), value); return YES; }
+    @catch (__unused NSException *exception) { return NO; }
+}
+static BOOL YTMISetInt(id target, NSString *name, int value) {
+    if (!YTMISelector(target, name, 1)) return NO;
+    @try { ((void (*)(id, SEL, int))objc_msgSend)(target, NSSelectorFromString(name), value); return YES; }
+    @catch (__unused NSException *exception) { return NO; }
+}
+static BOOL YTMISetInt64(id target, NSString *name, int64_t value) {
+    if (!YTMISelector(target, name, 1)) return NO;
+    @try { ((void (*)(id, SEL, int64_t))objc_msgSend)(target, NSSelectorFromString(name), value); return YES; }
+    @catch (__unused NSException *exception) { return NO; }
+}
 static NSString *YTMIProperty(void *framework, const char *symbol, NSString *fallback) {
     NSString *__unsafe_unretained *address = framework ? (NSString *__unsafe_unretained *)dlsym(framework, symbol) : NULL;
     return (address && *address) ? *address : fallback;
 }
-
-static void YTMISetValue(NSMutableDictionary *values, void *framework, const char *symbol, NSString *fallback, id value) {
-    NSString *key = YTMIProperty(framework, symbol, fallback);
-    if (key.length && value) values[key] = value;
-}
-
-static void YTMISetOptionalValue(NSMutableDictionary *values, void *framework, const char *symbol, id value) {
-    NSString *__unsafe_unretained *address = framework ? (NSString *__unsafe_unretained *)dlsym(framework, symbol) : NULL;
-    NSString *key = (address && *address) ? *address : nil;
-    if (key.length && value) values[key] = value;
-}
-
-static NSNumber *YTMIInternalMusicMediaType(void) {
-    @try {
-        MPMediaPropertyPredicate *publicPredicate =
-            [MPMediaPropertyPredicate predicateWithValue:@(MPMediaTypeMusic)
-                                             forProperty:@"mediaType"];
-        if (!YTMISelector(publicPredicate, @"ML3PredicateForTrack", 0)) return nil;
-        id internalPredicate = ((id (*)(id, SEL))objc_msgSend)(
-            publicPredicate, NSSelectorFromString(@"ML3PredicateForTrack"));
-        if (!YTMISelector(internalPredicate, @"value", 0)) return nil;
-        id value = ((id (*)(id, SEL))objc_msgSend)(internalPredicate, NSSelectorFromString(@"value"));
-        if (![value respondsToSelector:@selector(unsignedIntegerValue)]) return nil;
-        NSUInteger internalValue = [value unsignedIntegerValue];
-        return internalValue ? @(internalValue) : nil;
-    } @catch (__unused NSException *exception) {}
-    return nil;
-}
-
 static NSString *YTMIMediaFolder(id library) {
     if (YTMISelector(library, @"mediaFolderPath", 0)) {
-        id path = ((id (*)(id, SEL))objc_msgSend)(library, NSSelectorFromString(@"mediaFolderPath"));
-        if ([path isKindOfClass:NSString.class] && [path length]) return path;
+        id value = ((id (*)(id, SEL))objc_msgSend)(library, NSSelectorFromString(@"mediaFolderPath"));
+        if ([value isKindOfClass:NSString.class] && [value length]) return value;
     }
     NSFileManager *fm = NSFileManager.defaultManager;
     for (NSString *candidate in @[@"/var/mobile/Media/iTunes_Control/Music", @"/private/var/mobile/Media/iTunes_Control/Music"]) {
@@ -74,7 +78,6 @@ static NSString *YTMIMediaFolder(id library) {
     }
     return nil;
 }
-
 static NSString *YTMIDestinationDirectory(NSString *mediaFolder, NSError **error) {
     NSFileManager *fm = NSFileManager.defaultManager;
     for (NSUInteger index = 0; index < 50; index++) {
@@ -83,570 +86,323 @@ static NSString *YTMIDestinationDirectory(NSString *mediaFolder, NSError **error
         if ([fm fileExistsAtPath:candidate isDirectory:&directory] && directory) return candidate;
     }
     NSString *directory = [mediaFolder stringByAppendingPathComponent:@"F00"];
-    return [fm createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:error] ? directory : nil;
+    return [fm createDirectoryAtPath:directory withIntermediateDirectories:YES
+                          attributes:@{NSFilePosixPermissions:@0755} error:error] ? directory : nil;
 }
-
 static BOOL YTMIPlayablePath(NSString *path) {
     if (!path.length || ![NSFileManager.defaultManager isReadableFileAtPath:path]) return NO;
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:path] options:nil];
     AVAssetTrack *audio = [asset tracksWithMediaType:AVMediaTypeAudio].firstObject;
     return audio && CMTIME_IS_NUMERIC(asset.duration) && CMTimeGetSeconds(asset.duration) > 0.25;
 }
-
 static void YTMINotifyLibrary(id library) {
     for (NSString *name in @[@"notifyEntitiesAddedOrRemoved", @"notifyContentsDidChange", @"notifyLibraryImportDidFinish"]) {
-        if (YTMISelector(library, name, 0)) ((void (*)(id, SEL))objc_msgSend)(library, NSSelectorFromString(name));
+        if (YTMISelector(library, name, 0)) {
+            @try { ((void (*)(id, SEL))objc_msgSend)(library, NSSelectorFromString(name)); }
+            @catch (__unused NSException *exception) {}
+        }
     }
 }
-
 static BOOL YTMIReloadMediaPlayerLibrary(void) {
     @try {
         Class mediaLibraryClass = MPMediaLibrary.class;
         if (!YTMISelector(mediaLibraryClass, @"deviceMediaLibrary", 0)) return NO;
-        id mediaLibrary = ((id (*)(id, SEL))objc_msgSend)(mediaLibraryClass,
-            NSSelectorFromString(@"deviceMediaLibrary"));
+        id mediaLibrary = ((id (*)(id, SEL))objc_msgSend)(mediaLibraryClass, NSSelectorFromString(@"deviceMediaLibrary"));
         if (!YTMISelector(mediaLibrary, @"_reloadLibraryForContentsChangeWithNotificationInfo:", 1)) return NO;
-        ((void (*)(id, SEL, id))objc_msgSend)(mediaLibrary,
-            NSSelectorFromString(@"_reloadLibraryForContentsChangeWithNotificationInfo:"), nil);
+        ((void (*)(id, SEL, id))objc_msgSend)(mediaLibrary, NSSelectorFromString(@"_reloadLibraryForContentsChangeWithNotificationInfo:"), nil);
         return YES;
-    } @catch (__unused NSException *exception) {}
-    return NO;
+    } @catch (__unused NSException *exception) { return NO; }
 }
-
-static BOOL YTMIAlbumContainsTrack(unsigned long long albumID, unsigned long long trackID) {
-    @try {
-        MPMediaQuery *query = [MPMediaQuery albumsQuery];
-        if (!query) return NO;
-        [query addFilterPredicate:[MPMediaPropertyPredicate predicateWithValue:@(albumID)
-            forProperty:MPMediaItemPropertyAlbumPersistentID]];
-        for (MPMediaItemCollection *collection in query.collections ?: @[]) {
-            for (MPMediaItem *item in collection.items ?: @[]) {
-                if (item.persistentID == trackID) return YES;
-            }
-        }
-    } @catch (__unused NSException *exception) {}
-    return NO;
-}
-
-typedef NS_ENUM(NSInteger, YTMIModelRequestResult) {
-    YTMIModelRequestUnavailable,
-    YTMIModelRequestFailed,
-    YTMIModelRequestTimedOut,
-    YTMIModelRequestMissing,
-    YTMIModelRequestMatched
-};
-
-static YTMIModelRequestResult YTMIModelLibraryContainsTrack(unsigned long long persistentID,
-                                                             unsigned long long albumID,
-                                                             NSMutableArray *trace) {
-    Class requestClass = NSClassFromString(@"MPModelLibraryRequest");
-    Class songClass = NSClassFromString(@"MPModelSong");
-    Class propertySetClass = NSClassFromString(@"MPPropertySet");
-    if (!requestClass || !songClass || !propertySetClass) return YTMIModelRequestUnavailable;
-    YTMITrace(trace, @"music.model-library.classes.available");
-    if (!YTMISelector(songClass, @"kindWithVariants:", 1) ||
-        !YTMISelector(propertySetClass, @"emptyPropertySet", 0)) return YTMIModelRequestUnavailable;
-    YTMITrace(trace, @"music.model-library.kind.available");
-
-    id request = [requestClass new];
-    if (!request || !YTMISelector(request, @"setItemKind:", 1) ||
-        !YTMISelector(request, @"setItemProperties:", 1)) return YTMIModelRequestUnavailable;
-    YTMITrace(trace, @"music.model-library.configuration.available");
-    BOOL hasPublicLegacySetter = YTMISelector(request, @"setLegacyMediaQuery:", 1);
-    BOOL hasTransportLegacySetter = YTMISelector(request, @"setLegacyMediaQuery:forTransport:", 2);
-    if ((!hasPublicLegacySetter && !hasTransportLegacySetter) ||
-        !YTMISelector(request, @"legacyMediaQuery", 0)) return YTMIModelRequestUnavailable;
-    YTMITrace(trace, @"music.model-library.legacy-query-setter.available");
-    if (!YTMISelector(request, @"performWithResponseHandler:", 1)) return YTMIModelRequestUnavailable;
-    YTMITrace(trace, @"music.model-library.execution.available");
-
-    MPMediaQuery *query = [MPMediaQuery songsQuery];
-    if (!query) return YTMIModelRequestUnavailable;
-    [query addFilterPredicate:[MPMediaPropertyPredicate predicateWithValue:@(persistentID)
-        forProperty:MPMediaItemPropertyPersistentID]];
-    [query addFilterPredicate:[MPMediaPropertyPredicate predicateWithValue:@(albumID)
-        forProperty:MPMediaItemPropertyAlbumPersistentID]];
-
-    id kind = ((id (*)(id, SEL, NSUInteger))objc_msgSend)(songClass,
-        NSSelectorFromString(@"kindWithVariants:"), (NSUInteger)3);
-    id properties = ((id (*)(id, SEL))objc_msgSend)(propertySetClass,
-        NSSelectorFromString(@"emptyPropertySet"));
-    if (!kind || !properties) return YTMIModelRequestUnavailable;
-
-    __block BOOL finished = NO;
-    __block BOOL failed = NO;
-    __block BOOL matched = NO;
-    @try {
-        ((void (*)(id, SEL, id))objc_msgSend)(request, NSSelectorFromString(@"setItemKind:"), kind);
-        ((void (*)(id, SEL, id))objc_msgSend)(request, NSSelectorFromString(@"setItemProperties:"), properties);
-        if (hasPublicLegacySetter) {
-            ((void (*)(id, SEL, id))objc_msgSend)(request,
-                NSSelectorFromString(@"setLegacyMediaQuery:"), query);
-        }
-        id boundQuery = ((id (*)(id, SEL))objc_msgSend)(request,
-            NSSelectorFromString(@"legacyMediaQuery"));
-        if (!boundQuery && hasTransportLegacySetter) {
-            ((void (*)(id, SEL, id, BOOL))objc_msgSend)(request,
-                NSSelectorFromString(@"setLegacyMediaQuery:forTransport:"), query, NO);
-            boundQuery = ((id (*)(id, SEL))objc_msgSend)(request,
-                NSSelectorFromString(@"legacyMediaQuery"));
-        }
-        if (!boundQuery) return YTMIModelRequestFailed;
-        YTMITrace(trace, @"music.model-library.legacy-query.bound");
-        void (^handler)(id, NSError *) = ^(id response, NSError *requestError) {
-            failed = requestError != nil || !response;
-            if (!failed && YTMISelector(response, @"results", 0)) {
-                id results = ((id (*)(id, SEL))objc_msgSend)(response, NSSelectorFromString(@"results"));
-                if (YTMISelector(results, @"allItems", 0)) {
-                    id items = ((id (*)(id, SEL))objc_msgSend)(results, NSSelectorFromString(@"allItems"));
-                    NSArray *modelItems = [items isKindOfClass:NSArray.class] ? items : @[];
-                    for (id item in modelItems) {
-                        if (!YTMISelector(item, @"identifiers", 0)) continue;
-                        id identifiers = ((id (*)(id, SEL))objc_msgSend)(item, NSSelectorFromString(@"identifiers"));
-                        if (!YTMISelector(identifiers, @"library", 0)) continue;
-                        id libraryIdentifier = ((id (*)(id, SEL))objc_msgSend)(identifiers, NSSelectorFromString(@"library"));
-                        if (!YTMISelector(libraryIdentifier, @"persistentID", 0)) continue;
-                        unsigned long long modelID = ((unsigned long long (*)(id, SEL))objc_msgSend)(libraryIdentifier,
-                            NSSelectorFromString(@"persistentID"));
-                        if (modelID == persistentID) { matched = YES; break; }
-                    }
-                }
-            }
-            finished = YES;
-        };
-        ((void (*)(id, SEL, id))objc_msgSend)(request,
-            NSSelectorFromString(@"performWithResponseHandler:"), handler);
-    } @catch (__unused NSException *exception) {
-        return YTMIModelRequestFailed;
+static unsigned long long YTMIExtractPersistentID(id value) {
+    if ([value isKindOfClass:NSNumber.class]) return [value unsignedLongLongValue];
+    if ([value isKindOfClass:NSDictionary.class]) {
+        for (id nested in [(NSDictionary *)value allValues]) { unsigned long long pid = YTMIExtractPersistentID(nested); if (pid) return pid; }
     }
-
-    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:8.0];
-    while (!finished && deadline.timeIntervalSinceNow > 0) {
-        [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.10]];
+    if ([value isKindOfClass:NSArray.class] || [value isKindOfClass:NSSet.class]) {
+        for (id nested in value) { unsigned long long pid = YTMIExtractPersistentID(nested); if (pid) return pid; }
     }
-    if (!finished) return YTMIModelRequestTimedOut;
-    if (failed) return YTMIModelRequestFailed;
-    return matched ? YTMIModelRequestMatched : YTMIModelRequestMissing;
+    return 0;
 }
-
-static BOOL YTMIQueryContainsTrack(unsigned long long persistentID,
-                                   BOOL ignoreSystemFilters,
-                                   BOOL ignoreRestrictions,
-                                   NSString *property,
-                                   id value) {
-    @try {
-        MPMediaQuery *query = [MPMediaQuery songsQuery];
-        if (!query) return NO;
-        if (ignoreSystemFilters && YTMISelector(query, @"setIgnoreSystemFilterPredicates:", 1)) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(query, NSSelectorFromString(@"setIgnoreSystemFilterPredicates:"), YES);
-        }
-        if (ignoreRestrictions && YTMISelector(query, @"setIgnoreRestrictionsPredicates:", 1)) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(query, NSSelectorFromString(@"setIgnoreRestrictionsPredicates:"), YES);
-        }
-        [query addFilterPredicate:[MPMediaPropertyPredicate predicateWithValue:@(persistentID)
-            forProperty:MPMediaItemPropertyPersistentID]];
-        if (property.length && value) {
-            [query addFilterPredicate:[MPMediaPropertyPredicate predicateWithValue:value forProperty:property]];
-        }
-        for (MPMediaItem *item in query.items ?: @[]) {
-            if (item.persistentID == persistentID) return YES;
-        }
-    } @catch (__unused NSException *exception) {}
-    return NO;
+static BOOL YTMIRecordOwnership(NSString *importID, unsigned long long persistentID, NSString *path) {
+    if (!persistentID || !path.length) return NO;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *directory = YTMIOwnershipLedgerPath.stringByDeletingLastPathComponent;
+    if (![fm createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0755} error:nil]) return NO;
+    NSDictionary *existing = [NSDictionary dictionaryWithContentsOfFile:YTMIOwnershipLedgerPath];
+    NSMutableDictionary *ledger = [existing isKindOfClass:NSDictionary.class] ? [existing mutableCopy] : [NSMutableDictionary dictionary];
+    NSMutableDictionary *entries = [ledger[@"entries"] isKindOfClass:NSDictionary.class] ? [ledger[@"entries"] mutableCopy] : [NSMutableDictionary dictionary];
+    NSString *key = [NSString stringWithFormat:@"%llu", persistentID];
+    entries[key] = @{@"persistentID":@(persistentID), @"path":path,
+                     @"importID":importID.length ? importID : @"B60-UNKNOWN"};
+    ledger[@"schema"] = @2;
+    ledger[@"entries"] = entries;
+    if (![ledger writeToFile:YTMIOwnershipLedgerPath atomically:YES]) return NO;
+    if (![fm setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:YTMIOwnershipLedgerPath error:nil]) return NO;
+    NSDictionary *saved = [NSDictionary dictionaryWithContentsOfFile:YTMIOwnershipLedgerPath];
+    NSDictionary *savedEntry = [saved[@"entries"][key] isKindOfClass:NSDictionary.class] ? saved[@"entries"][key] : nil;
+    return [savedEntry[@"persistentID"] unsignedLongLongValue] == persistentID && [savedEntry[@"path"] isEqualToString:path];
 }
-
-static void YTMITraceCheck(NSMutableArray *trace, NSString *name, BOOL matched) {
-    YTMITrace(trace, [NSString stringWithFormat:@"music.filter.%@.%@", name, matched ? @"match" : @"failed"]);
-}
-
-static void YTMIRollBackEntity(Class entityClass, id library, unsigned long long persistentID) {
-    if (persistentID && YTMISelector(entityClass, @"deleteFromLibrary:deletionType:persistentIDs:count:", 4)) {
+static void YTMIRollBackExactTrack(Class trackClass, id library, unsigned long long persistentID, NSString *path) {
+    if (persistentID && YTMISelector(trackClass, @"deleteFromLibrary:deletionType:persistentIDs:count:", 4)) {
         int64_t identifier = (int64_t)persistentID;
-        @try {
-            ((BOOL (*)(id, SEL, id, int, const int64_t *, NSUInteger))objc_msgSend)(entityClass,
-                NSSelectorFromString(@"deleteFromLibrary:deletionType:persistentIDs:count:"),
-                library, 1, &identifier, 1);
-        } @catch (__unused NSException *exception) {}
+        @try { ((BOOL (*)(id, SEL, id, int, const int64_t *, NSUInteger))objc_msgSend)(trackClass,
+            NSSelectorFromString(@"deleteFromLibrary:deletionType:persistentIDs:count:"), library, 1, &identifier, 1); }
+        @catch (__unused NSException *exception) {}
     }
-}
-
-static void YTMIRollBackImport(Class trackClass, unsigned long long trackID,
-                               Class artistClass, unsigned long long artistID,
-                               Class albumClass, unsigned long long albumID,
-                               id library, NSString *path) {
-    YTMIRollBackEntity(trackClass, library, trackID);
-    YTMIRollBackEntity(albumClass, library, albumID);
-    YTMIRollBackEntity(artistClass, library, artistID);
     if (path.length) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
     YTMINotifyLibrary(library);
     YTMIReloadMediaPlayerLibrary();
 }
+static BOOL YTMIIsLegacyOwnedName(NSString *name) {
+    if (![name.pathExtension.lowercaseString isEqualToString:@"m4a"]) return NO;
+    NSString *stem = name.stringByDeletingPathExtension;
+    if (stem.length != 16) return NO;
+    NSCharacterSet *hex = [NSCharacterSet characterSetWithCharactersInString:@"0123456789ABCDEFabcdef"];
+    return [stem rangeOfCharacterFromSet:hex.invertedSet].location == NSNotFound;
+}
+static NSString *YTMICanonicalPath(NSString *path) {
+    if (![path isKindOfClass:NSString.class] || !path.length) return nil;
+    return path.stringByStandardizingPath.stringByResolvingSymlinksInPath;
+}
+static BOOL YTMIDeleteEntityIDs(Class entityClass, id library, NSArray<NSNumber *> *identifiers, BOOL canonicalize) {
+    if (!identifiers.count) return YES;
+    int64_t *values = calloc(identifiers.count, sizeof(int64_t));
+    if (!values) return NO;
+    for (NSUInteger index = 0; index < identifiers.count; index++) values[index] = identifiers[index].longLongValue;
+    BOOL deleted = NO;
+    @try {
+        if (canonicalize && YTMISelector(entityClass, @"deleteFromLibrary:deletionType:canonicalizeCollections:persistentIDs:count:", 5)) {
+            deleted = ((BOOL (*)(id, SEL, id, int, BOOL, const int64_t *, NSUInteger))objc_msgSend)(entityClass,
+                NSSelectorFromString(@"deleteFromLibrary:deletionType:canonicalizeCollections:persistentIDs:count:"),
+                library, 1, YES, values, identifiers.count);
+        } else if (YTMISelector(entityClass, @"deleteFromLibrary:deletionType:persistentIDs:count:", 4)) {
+            deleted = ((BOOL (*)(id, SEL, id, int, const int64_t *, NSUInteger))objc_msgSend)(entityClass,
+                NSSelectorFromString(@"deleteFromLibrary:deletionType:persistentIDs:count:"),
+                library, 1, values, identifiers.count);
+        }
+    } @catch (__unused NSException *exception) { deleted = NO; }
+    free(values);
+    return deleted;
+}
+static BOOL YTMICleanupLegacyOwnedDebris(id library, Class trackClass, Class albumClass,
+                                         NSString *mediaFolder, NSMutableArray *trace) {
+    sqlite3 *database = NULL;
+    if (sqlite3_open_v2(YTMIMediaDatabasePath.fileSystemRepresentation, &database,
+                        SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK) {
+        if (database) sqlite3_close(database);
+        return NO;
+    }
+    NSMutableArray<NSNumber *> *trackIDs = [NSMutableArray array];
+    NSMutableOrderedSet<NSNumber *> *candidateAlbumIDs = [NSMutableOrderedSet orderedSet];
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    const char *trackSQL =
+        "SELECT i.item_pid, i.album_pid FROM item i JOIN item_extra e USING(item_pid) "
+        "JOIN album a ON a.album_pid=i.album_pid WHERE a.album='YT Music Importer' "
+        "AND e.location IS NOT NULL AND length(e.location)>0";
+    sqlite3_stmt *statement = NULL;
+    if (sqlite3_prepare_v2(database, trackSQL, -1, &statement, NULL) != SQLITE_OK) {
+        sqlite3_close(database);
+        return NO;
+    }
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+        unsigned long long persistentID = (unsigned long long)sqlite3_column_int64(statement, 0);
+        long long albumID = sqlite3_column_int64(statement, 1);
+        id track = YTMISelector(trackClass, @"newWithPersistentID:inLibrary:", 2) ?
+            ((id (*)(id, SEL, unsigned long long, id))objc_msgSend)(trackClass,
+                NSSelectorFromString(@"newWithPersistentID:inLibrary:"), persistentID, library) : nil;
+        NSString *path = track && YTMISelector(track, @"absoluteFilePath", 0) ?
+            ((id (*)(id, SEL))objc_msgSend)(track, NSSelectorFromString(@"absoluteFilePath")) : nil;
+        NSString *standardPath = YTMICanonicalPath(path);
+        NSString *standardRoot = YTMICanonicalPath(mediaFolder);
+        if (persistentID && standardPath.length && [standardPath hasPrefix:[standardRoot stringByAppendingString:@"/"]] &&
+            YTMIIsLegacyOwnedName(standardPath.lastPathComponent)) {
+            [trackIDs addObject:@(persistentID)];
+            if (albumID > 0) [candidateAlbumIDs addObject:@(albumID)];
+            [paths addObject:standardPath];
+        }
+    }
+    sqlite3_finalize(statement);
+    if (trackIDs.count && !YTMIDeleteEntityIDs(trackClass, library, trackIDs, YES)) {
+        sqlite3_close(database);
+        return NO;
+    }
+    for (NSString *path in paths) [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+
+    NSMutableArray<NSNumber *> *orphanAlbumIDs = [NSMutableArray array];
+    const char *albumSQL =
+        "SELECT 1 FROM album a WHERE a.album_pid=? AND a.album='YT Music Importer' "
+        "AND NOT EXISTS (SELECT 1 FROM item i WHERE i.album_pid=a.album_pid)";
+    for (NSNumber *candidateAlbumID in candidateAlbumIDs) {
+        statement = NULL;
+        if (sqlite3_prepare_v2(database, albumSQL, -1, &statement, NULL) != SQLITE_OK) {
+            sqlite3_close(database);
+            return NO;
+        }
+        sqlite3_bind_int64(statement, 1, candidateAlbumID.longLongValue);
+        if (sqlite3_step(statement) == SQLITE_ROW) [orphanAlbumIDs addObject:candidateAlbumID];
+        sqlite3_finalize(statement);
+    }
+    sqlite3_close(database);
+    if (orphanAlbumIDs.count && !YTMIDeleteEntityIDs(albumClass, library, orphanAlbumIDs, NO)) return NO;
+    if (trackIDs.count || orphanAlbumIDs.count) {
+        YTMINotifyLibrary(library);
+        YTMIReloadMediaPlayerLibrary();
+        YTMITrace(trace, @"music.legacy-cleanup.removed-owned-debris");
+    } else {
+        YTMITrace(trace, @"music.legacy-cleanup.nothing-owned");
+    }
+    return YES;
+}
 
 @implementation YTMIMusicDatabaseImporter
 - (BOOL)importAudioAtURL:(NSURL *)audioURL metadata:(NSDictionary *)metadata trace:(NSMutableArray *)trace error:(NSError **)error {
-    if (![NSThread isMainThread]) {
-        __block BOOL result = NO; __block NSError *inner = nil;
-        dispatch_sync(dispatch_get_main_queue(), ^{ result = [self importAudioAtURL:audioURL metadata:metadata trace:trace error:&inner]; });
-        if (error) *error = inner;
-        return result;
-    }
-
     NSFileManager *fm = NSFileManager.defaultManager;
     if (!audioURL.isFileURL || ![fm fileExistsAtPath:audioURL.path]) { if (error) *error = YTMIError(19, @"The prepared audio file is unavailable."); return NO; }
     YTMITrace(trace, @"music.source.present");
-
     AVURLAsset *sourceAsset = [AVURLAsset URLAssetWithURL:audioURL options:nil];
     AVAssetTrack *sourceTrack = [sourceAsset tracksWithMediaType:AVMediaTypeAudio].firstObject;
-    if (!sourceTrack || !CMTIME_IS_NUMERIC(sourceAsset.duration) || CMTimeGetSeconds(sourceAsset.duration) <= 0.25) { if (error) *error = YTMIError(80, @"The prepared audio is not playable."); return NO; }
+    double seconds = CMTIME_IS_NUMERIC(sourceAsset.duration) ? CMTimeGetSeconds(sourceAsset.duration) : 0;
+    if (!sourceTrack || seconds <= 0.25) { if (error) *error = YTMIError(80, @"The prepared audio is not playable."); return NO; }
     YTMITrace(trace, @"music.source.playable");
 
     void *music = dlopen("/System/Library/PrivateFrameworks/MusicLibrary.framework/MusicLibrary", RTLD_NOW | RTLD_LOCAL);
-    Class libraryClass = NSClassFromString(@"ML3MusicLibrary");
-    Class trackClass = NSClassFromString(@"ML3Track");
-    Class artistClass = NSClassFromString(@"ML3Artist");
-    Class albumClass = NSClassFromString(@"ML3Album");
-    if (!music || !libraryClass || !trackClass || !artistClass || !albumClass ||
-        !YTMISelector(libraryClass, @"sharedLibrary", 0) ||
-        !YTMISelector(trackClass, @"newWithDictionary:inLibrary:", 2) ||
-        !YTMISelector(artistClass, @"newWithDictionary:inLibrary:", 2) ||
-        !YTMISelector(albumClass, @"newWithDictionary:inLibrary:", 2)) {
-        if (error) *error = YTMIError(97, @"Music's local-library interface is unavailable on this system.");
-        return NO;
+    Class libraryClass = NSClassFromString(@"ML3MusicLibrary"), trackClass = NSClassFromString(@"ML3Track");
+    Class legacyAlbumClass = NSClassFromString(@"ML3Album");
+    Class configurationClass = NSClassFromString(@"ML3ClientImportSessionConfiguration"), sessionClass = NSClassFromString(@"ML3ClientImportSession");
+    Class clientItemClass = NSClassFromString(@"ML3ClientImportItem"), mediaItemClass = NSClassFromString(@"MIPMediaItem");
+    Class songClass = NSClassFromString(@"MIPSong"), artistClass = NSClassFromString(@"MIPArtist"), albumClass = NSClassFromString(@"MIPAlbum");
+    Class playbackClass = NSClassFromString(@"MIPPlaybackInfo"), identifierClass = NSClassFromString(@"MIPMultiverseIdentifier");
+    if (!music || !libraryClass || !trackClass || !legacyAlbumClass || !configurationClass || !sessionClass || !clientItemClass ||
+        !mediaItemClass || !songClass || !artistClass || !albumClass || !playbackClass || !identifierClass ||
+        !YTMISelector(libraryClass, @"sharedLibrary", 0)) {
+        if (error) *error = YTMIError(146, @"Music's client-import service is unavailable on this system."); return NO;
     }
+    YTMITrace(trace, @"music.client-import.classes.available");
+
     id library = ((id (*)(id, SEL))objc_msgSend)(libraryClass, NSSelectorFromString(@"sharedLibrary"));
-    if (!library) { if (error) *error = YTMIError(97, @"Music's local library could not be opened."); return NO; }
-    YTMITrace(trace, @"music.local-api.available");
-
-    // Ask MediaPlayer to build its internal track predicate and read the
-    // converted value back from that predicate. The conversion function is
-    // not required to be exported as a directly resolvable C symbol.
-    NSNumber *internalMusicMediaType = YTMIInternalMusicMediaType();
-    if (!internalMusicMediaType) {
-        if (error) *error = YTMIError(132, @"Music's internal media-type mapping is unavailable.");
-        return NO;
-    }
-    YTMITrace(trace, @"music.media-type.predicate-mapping.available");
-
+    NSError *copyError = nil;
     NSString *mediaFolder = YTMIMediaFolder(library);
-    NSError *fileError = nil;
-    NSString *directory = mediaFolder.length ? YTMIDestinationDirectory(mediaFolder, &fileError) : nil;
-    if (!directory.length) { if (error) *error = YTMIError(51, @"Music's local storage could not be prepared."); return NO; }
-    NSString *token = [NSUUID.UUID.UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""];
-    NSString *destinationPath = [directory stringByAppendingPathComponent:[[token substringToIndex:MIN((NSUInteger)16, token.length)] stringByAppendingPathExtension:@"m4a"]];
-    if (![fm copyItemAtPath:audioURL.path toPath:destinationPath error:&fileError] || !YTMIPlayablePath(destinationPath)) {
-        [fm removeItemAtPath:destinationPath error:nil];
-        if (error) *error = YTMIError(53, @"The playable audio could not be copied into Music storage.");
-        return NO;
+    NSString *directory = mediaFolder ? YTMIDestinationDirectory(mediaFolder, &copyError) : nil;
+    if (!library || !directory) { if (error) *error = copyError ?: YTMIError(96, @"Music's local media folder is unavailable."); return NO; }
+    if (!YTMICleanupLegacyOwnedDebris(library, trackClass, legacyAlbumClass, mediaFolder, trace)) {
+        if (error) *error = YTMIError(155, @"Music could not safely remove the importer's legacy owned debris."); return NO;
     }
+    NSString *destinationPath = [directory stringByAppendingPathComponent:[NSString stringWithFormat:@"YTMI-%@.m4a", NSUUID.UUID.UUIDString]];
+    if (![fm copyItemAtPath:audioURL.path toPath:destinationPath error:&copyError]) { if (error) *error = copyError ?: YTMIError(97, @"Music could not copy the local audio payload."); return NO; }
+    [fm setAttributes:@{NSFilePosixPermissions:@0644, NSFileProtectionKey:NSFileProtectionNone} ofItemAtPath:destinationPath error:nil];
+    if (!YTMIPlayablePath(destinationPath)) { [fm removeItemAtPath:destinationPath error:nil]; if (error) *error = YTMIError(110, @"Music's copied local audio is not playable."); return NO; }
     YTMITrace(trace, @"music.payload.copied");
 
-    double seconds = CMTimeGetSeconds(sourceAsset.duration);
-    long long milliseconds = (long long)llround(seconds * 1000.0);
-    long long sampleRate = 0, durationSamples = 0, bitRate = (long long)llround(sourceTrack.estimatedDataRate / 1000.0);
-    UInt32 audioFormat = 0;
-    if (sourceTrack.formatDescriptions.count) {
-        const AudioStreamBasicDescription *asbd = CMAudioFormatDescriptionGetStreamBasicDescription((__bridge CMAudioFormatDescriptionRef)sourceTrack.formatDescriptions.firstObject);
-        if (asbd) {
-            sampleRate = (long long)llround(asbd->mSampleRate);
-            audioFormat = asbd->mFormatID;
-        }
-    }
-    if (sampleRate > 0) durationSamples = CMTimeConvertScale(sourceAsset.duration, (int32_t)sampleRate, kCMTimeRoundingMethod_RoundHalfAwayFromZero).value;
-    NSDictionary *attributes = [fm attributesOfItemAtPath:destinationPath error:nil];
     NSString *title = YTMISafeText(metadata[YTMIJobTitleKey], @"YouTube Audio");
-    NSString *artist = YTMISafeText(metadata[YTMIJobArtistKey], @"YouTube");
-    NSString *album = YTMISafeText(metadata[YTMIJobAlbumKey], @"YT Music Importer");
-    NSDate *now = NSDate.date;
+    NSString *artistName = YTMISafeText(metadata[YTMIJobArtistKey], @"YouTube");
+    NSString *albumName = YTMISafeText(metadata[YTMIJobAlbumKey], @"YT Music Importer");
+    NSString *importID = YTMISafeText(metadata[YTMIJobImportIDKey], @"B60-UNKNOWN");
+    NSDictionary *attributes = [fm attributesOfItemAtPath:destinationPath error:nil];
+    int64_t milliseconds = (int64_t)llround(seconds * 1000.0);
+    int64_t absoluteTime = (int64_t)floor(NSDate.date.timeIntervalSinceReferenceDate);
+    id artist = YTMINewObject(artistClass), albumArtist = YTMINewObject(artistClass), album = YTMINewObject(albumClass);
+    id playback = YTMINewObject(playbackClass), song = YTMINewObject(songClass), mediaItem = YTMINewObject(mediaItemClass);
+    id identifier = YTMINewObject(identifierClass);
+    BOOL payloadOK = artist && albumArtist && album && playback && song && mediaItem && identifier &&
+        YTMISetObject(artist, @"setName:", artistName) && YTMISetObject(albumArtist, @"setName:", artistName) &&
+        YTMISetObject(album, @"setName:", albumName) && YTMISetObject(album, @"setArtist:", albumArtist) &&
+        YTMISetInt(album, @"setNumTracks:", 1) && YTMISetInt(album, @"setNumDiscs:", 1) &&
+        YTMISetObject(playback, @"setDataUrl:", [NSURL fileURLWithPath:destinationPath].absoluteString) &&
+        YTMISetInt(playback, @"setDataKind:", 0) && YTMISetObject(song, @"setArtist:", artist) &&
+        YTMISetObject(song, @"setAlbum:", album) && YTMISetObject(song, @"setPlaybackInfo:", playback) &&
+        YTMISetInt(song, @"setTrackNumber:", 1) && YTMISetInt(song, @"setDiscNumber:", 1) &&
+        YTMISetObject(mediaItem, @"setTitle:", title) && YTMISetInt(mediaItem, @"setMediaType:", 1) &&
+        YTMISetInt64(mediaItem, @"setDuration:", milliseconds) && YTMISetInt64(mediaItem, @"setFileSize:", [attributes[NSFileSize] longLongValue]) &&
+        YTMISetInt64(mediaItem, @"setCreationDateTime:", absoluteTime) && YTMISetInt64(mediaItem, @"setModificationDateTime:", absoluteTime) &&
+        YTMISetInt64(mediaItem, @"setPurchaseDateTime:", absoluteTime) && YTMISetBool(mediaItem, @"setHasLocalAsset:", YES) &&
+        YTMISetBool(mediaItem, @"setIsInUsersLibrary:", YES) && YTMISetBool(mediaItem, @"setHidden:", NO) &&
+        YTMISetInt64(mediaItem, @"setFamilyAccountId:", 0) && YTMISetInt(mediaItem, @"setStoreProtectionType:", 0) &&
+        YTMISetObject(mediaItem, @"setSong:", song) && YTMISetInt(identifier, @"setMediaObjectType:", 6) &&
+        YTMISetInt(identifier, @"setMediaType:", 1) && YTMISetObject(identifier, @"setName:", importID);
 
-    // Artist and album are normalized collection entities in ML3. The readable
-    // track properties are SQL joins; writing those strings directly never
-    // establishes item_artist_pid / album_pid and produces a half-valid row.
-    NSString *artistNameProperty = YTMIProperty(music, "ML3ArtistPropertyName", @"item_artist");
-    NSString *albumNameProperty = YTMIProperty(music, "ML3AlbumPropertyName", @"album");
-    id artistEntity = nil, albumEntity = nil;
-    @try {
-        artistEntity = ((id (*)(id, SEL, id, id))objc_msgSend)(artistClass,
-            NSSelectorFromString(@"newWithDictionary:inLibrary:"),
-            @{artistNameProperty: artist}, library);
-        albumEntity = ((id (*)(id, SEL, id, id))objc_msgSend)(albumClass,
-            NSSelectorFromString(@"newWithDictionary:inLibrary:"),
-            @{albumNameProperty: album}, library);
-    } @catch (__unused NSException *exception) {
-        artistEntity = nil;
-        albumEntity = nil;
+    CMAudioFormatDescriptionRef formatDescription = (__bridge CMAudioFormatDescriptionRef)sourceTrack.formatDescriptions.firstObject;
+    const AudioStreamBasicDescription *asbd = formatDescription ? CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) : NULL;
+    if (asbd) {
+        if (asbd->mSampleRate > 0) YTMISetInt(playback, @"setSampleRate:", (int)llround(asbd->mSampleRate));
+        if (asbd->mFormatID) YTMISetInt(song, @"setAudioFormat:", (int)asbd->mFormatID);
+        int64_t samples = (int64_t)llround(seconds * asbd->mSampleRate);
+        if (samples > 0) YTMISetInt64(playback, @"setDurationInSamples:", samples);
     }
-    unsigned long long artistID = artistEntity && YTMISelector(artistEntity, @"persistentID", 0) ? ((unsigned long long (*)(id, SEL))objc_msgSend)(artistEntity, NSSelectorFromString(@"persistentID")) : 0;
-    unsigned long long albumID = albumEntity && YTMISelector(albumEntity, @"persistentID", 0) ? ((unsigned long long (*)(id, SEL))objc_msgSend)(albumEntity, NSSelectorFromString(@"persistentID")) : 0;
-    if (!artistID || !albumID) {
-        YTMIRollBackEntity(albumClass, library, albumID);
-        YTMIRollBackEntity(artistClass, library, artistID);
-        [fm removeItemAtPath:destinationPath error:nil];
-        if (error) *error = YTMIError(115, @"Music could not create the artist and album relationships.");
-        return NO;
-    }
-    YTMITrace(trace, @"music.collections.created");
+    if (sourceTrack.estimatedDataRate > 0) YTMISetInt(playback, @"setBitRate:", (int)llround(sourceTrack.estimatedDataRate));
 
-    NSMutableDictionary *values = [NSMutableDictionary dictionary];
-    YTMISetValue(values, music, "ML3TrackPropertyTitle", @"title", title);
-    YTMISetValue(values, music, "ML3TrackPropertyArtistPersistentID", @"item_artist_pid", @(artistID));
-    YTMISetValue(values, music, "ML3TrackPropertyAlbumPersistentID", @"album_pid", @(albumID));
-    YTMISetValue(values, music, "ML3TrackPropertyMediaType", @"media_type", internalMusicMediaType);
-    YTMISetValue(values, music, "ML3TrackPropertyTotalSize", @"total_size", attributes[NSFileSize] ?: @0);
-    YTMISetValue(values, music, "ML3TrackPropertyTotalTime", @"total_time", @(milliseconds));
-    YTMISetValue(values, music, "ML3TrackPropertyDateAdded", @"date_added", now);
-    YTMISetValue(values, music, "ML3TrackPropertyDateModified", @"date_modified", now);
-    YTMISetValue(values, music, "ML3TrackPropertyTrackNumber", @"track_number", @1);
-    YTMISetValue(values, music, "ML3TrackPropertyDiscNumber", @"disc_number", @1);
-    YTMISetValue(values, music, "ML3TrackPropertyHidden", @"hidden", @NO);
-    YTMISetValue(values, music, "ML3TrackPropertyIsInMyLibrary", @"in_my_library", @YES);
-    if (audioFormat) YTMISetOptionalValue(values, music, "ML3TrackPropertyAudioFormat", @(audioFormat));
-    YTMISetOptionalValue(values, music, "ML3TrackPropertyDataKind", @0);
-    if (sampleRate > 0) YTMISetOptionalValue(values, music, "ML3TrackPropertySampleRate", @(sampleRate));
-    if (durationSamples > 0) YTMISetOptionalValue(values, music, "ML3TrackPropertyDurationInSamples", @(durationSamples));
-    if (bitRate > 0) YTMISetOptionalValue(values, music, "ML3TrackPropertyBitRate", @(bitRate));
+    id clientItem = payloadOK ? YTMINewObject2(clientItemClass, @"initWithMultiverseIdentifier:mediaItem:", identifier, mediaItem) : nil;
+    id configuration = YTMINewObject(configurationClass);
+    if (!clientItem || !configuration || !YTMISetInt64(configuration, @"setOperationCount:", 1)) {
+        [fm removeItemAtPath:destinationPath error:nil]; if (error) *error = YTMIError(147, @"Music rejected the client-import payload contract."); return NO;
+    }
+    YTMITrace(trace, @"music.client-import.payload.created");
+    id session = YTMINewObject2(sessionClass, @"initWithConfiguration:delegate:", configuration, nil);
+    if (!session || !YTMISelector(session, @"start", 0) || !YTMISelector(session, @"addItemsReturningResult:", 1) ||
+        !YTMISelector(session, @"finish", 0) || !YTMISelector(session, @"cancel", 0)) {
+        [fm removeItemAtPath:destinationPath error:nil]; if (error) *error = YTMIError(148, @"Music's client-import transaction interface is unavailable."); return NO;
+    }
+    BOOL started = NO;
+    @try { started = ((BOOL (*)(id, SEL))objc_msgSend)(session, NSSelectorFromString(@"start")); }
+    @catch (__unused NSException *exception) { started = NO; }
+    if (!started) { [fm removeItemAtPath:destinationPath error:nil]; if (error) *error = YTMIError(149, @"Music could not start its client-import transaction."); return NO; }
+    YTMITrace(trace, @"music.client-import.session.started");
 
-    id track = nil;
-    @try { track = ((id (*)(id, SEL, id, id))objc_msgSend)(trackClass, NSSelectorFromString(@"newWithDictionary:inLibrary:"), values, library); }
-    @catch (__unused NSException *exception) { track = nil; }
-    if (!track) {
-        YTMIRollBackImport(trackClass, 0, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(98, @"Music rejected the local track record.");
-        return NO;
+    id result = nil;
+    @try { result = ((id (*)(id, SEL, id))objc_msgSend)(session, NSSelectorFromString(@"addItemsReturningResult:"), @[clientItem]); }
+    @catch (__unused NSException *exception) { result = nil; }
+    BOOL added = result && YTMISelector(result, @"success", 0) && ((BOOL (*)(id, SEL))objc_msgSend)(result, NSSelectorFromString(@"success"));
+    id resultIDs = added && YTMISelector(result, @"resultingDatabasePersistentIDs", 0) ? ((id (*)(id, SEL))objc_msgSend)(result, NSSelectorFromString(@"resultingDatabasePersistentIDs")) : nil;
+    unsigned long long persistentID = YTMIExtractPersistentID(resultIDs);
+    if (!added || !persistentID) {
+        @try { ((BOOL (*)(id, SEL))objc_msgSend)(session, NSSelectorFromString(@"cancel")); } @catch (__unused NSException *exception) {}
+        [fm removeItemAtPath:destinationPath error:nil]; if (error) *error = YTMIError(150, @"Music's client-import service rejected the local song."); return NO;
     }
-    YTMITrace(trace, @"music.record.created");
-
-    unsigned long long persistentID = YTMISelector(track, @"persistentID", 0) ? ((unsigned long long (*)(id, SEL))objc_msgSend)(track, NSSelectorFromString(@"persistentID")) : 0;
-    if (!persistentID || !YTMISelector(artistEntity, @"updateTrackValues:", 1) ||
-        !YTMISelector(albumEntity, @"updateTrackValues:", 1) ||
-        !YTMISelector(artistEntity, @"valueForProperty:", 1) ||
-        !YTMISelector(albumEntity, @"valueForProperty:", 1)) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(133, @"Music's collection-normalization interface is unavailable.");
-        return NO;
-    }
-    NSMutableDictionary *normalizedTrackValues = [@{
-        @"ROWID": @(persistentID),
-        @"item_artist.item_artist": artist,
-        @"album.album": album
-    } mutableCopy];
-    YTMITrace(trace, @"music.collections.normalization.started");
-    @try {
-        ((void (*)(id, SEL, id))objc_msgSend)(artistEntity,
-            NSSelectorFromString(@"updateTrackValues:"), normalizedTrackValues);
-        ((void (*)(id, SEL, id))objc_msgSend)(albumEntity,
-            NSSelectorFromString(@"updateTrackValues:"), normalizedTrackValues);
-    } @catch (__unused NSException *exception) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(134, @"Music rejected collection normalization.");
-        return NO;
-    }
-    YTMITrace(trace, @"music.collections.normalization.returned");
-    id artistRepresentative = ((id (*)(id, SEL, id))objc_msgSend)(artistEntity,
-        NSSelectorFromString(@"valueForProperty:"), @"representative_item_pid");
-    id albumRepresentative = ((id (*)(id, SEL, id))objc_msgSend)(albumEntity,
-        NSSelectorFromString(@"valueForProperty:"), @"representative_item_pid");
-    if (![artistRepresentative respondsToSelector:@selector(unsignedLongLongValue)] ||
-        [artistRepresentative unsignedLongLongValue] != persistentID ||
-        ![albumRepresentative respondsToSelector:@selector(unsignedLongLongValue)] ||
-        [albumRepresentative unsignedLongLongValue] != persistentID) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(135, @"Music did not retain the normalized collection representatives.");
-        return NO;
-    }
-    id normalizedArtistID = normalizedTrackValues[@"item_artist_pid"];
-    id normalizedAlbumID = normalizedTrackValues[@"album_pid"];
-    if (![normalizedArtistID respondsToSelector:@selector(unsignedLongLongValue)] ||
-        [normalizedArtistID unsignedLongLongValue] != artistID ||
-        ![normalizedAlbumID respondsToSelector:@selector(unsignedLongLongValue)] ||
-        [normalizedAlbumID unsignedLongLongValue] != albumID) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(136, @"Music returned different normalized artist or album relationships.");
-        return NO;
-    }
-    YTMITrace(trace, @"music.collections.normalization.verified");
-    if (!persistentID || !YTMISelector(track, @"populateLocationPropertiesWithPath:protectionType:", 2)) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(99, @"Music's supported local-location transaction is unavailable.");
-        return NO;
-    }
-    YTMITrace(trace, @"music.location.transaction.started");
-    @try { ((void (*)(id, SEL, id, long long))objc_msgSend)(track, NSSelectorFromString(@"populateLocationPropertiesWithPath:protectionType:"), destinationPath, 0); }
-    @catch (__unused NSException *exception) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(99, @"Music rejected the local-location transaction."); return NO; }
-    YTMITrace(trace, @"music.location.transaction.returned");
-
-    // Match MediaPlayer's own add-to-library path: membership is asserted after
-    // the location transaction, then read back before a visible query is trusted.
-    NSString *membershipProperty = YTMIProperty(music, "ML3TrackPropertyIsInMyLibrary", @"in_my_library");
-    if (!YTMISelector(track, @"setValue:forProperty:", 2) || !YTMISelector(track, @"valueForProperty:", 1)) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(103, @"Music could not finalize local-library membership.");
-        return NO;
-    }
-    BOOL membershipSaved = NO;
-    @try { membershipSaved = ((BOOL (*)(id, SEL, id, id))objc_msgSend)(track, NSSelectorFromString(@"setValue:forProperty:"), @YES, membershipProperty); }
-    @catch (__unused NSException *exception) { membershipSaved = NO; }
-    if (!membershipSaved) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(103, @"Music rejected local-library membership."); return NO; }
-    id membership = ((id (*)(id, SEL, id))objc_msgSend)(track, NSSelectorFromString(@"valueForProperty:"), membershipProperty);
-    if (![membership respondsToSelector:@selector(boolValue)] || ![membership boolValue]) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(104, @"Music did not retain local-library membership.");
-        return NO;
-    }
-    YTMITrace(trace, @"music.membership.verified");
-
-    // ML3Entity commits an explicit property dictionary synchronously through
-    // its writer connection. Reassert user metadata after location linking so
-    // the reopened record is verified from committed values, not constructor state.
-    if (!YTMISelector(track, @"setValuesForPropertiesWithDictionary:", 1)) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(111, @"Music's metadata transaction is unavailable.");
-        return NO;
-    }
-    NSDictionary *committedMetadata = @{
-        YTMIProperty(music, "ML3TrackPropertyTitle", @"title"): title,
-        YTMIProperty(music, "ML3TrackPropertyArtistPersistentID", @"item_artist_pid"): @(artistID),
-        YTMIProperty(music, "ML3TrackPropertyAlbumPersistentID", @"album_pid"): @(albumID),
-        YTMIProperty(music, "ML3TrackPropertyMediaType", @"media_type"): internalMusicMediaType
-    };
-    BOOL metadataSaved = NO;
-    @try { metadataSaved = ((BOOL (*)(id, SEL, id))objc_msgSend)(track, NSSelectorFromString(@"setValuesForPropertiesWithDictionary:"), committedMetadata); }
-    @catch (__unused NSException *exception) { metadataSaved = NO; }
-    if (!metadataSaved) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(111, @"Music rejected the metadata transaction.");
-        return NO;
-    }
-    YTMITrace(trace, @"music.metadata.transaction.committed");
+    YTMITrace(trace, @"music.client-import.item.accepted");
+    YTMITrace(trace, @"music.client-import.persistent-id.returned");
+    BOOL finished = NO;
+    @try { finished = ((BOOL (*)(id, SEL))objc_msgSend)(session, NSSelectorFromString(@"finish")); }
+    @catch (__unused NSException *exception) { finished = NO; }
+    if (!finished) { YTMIRollBackExactTrack(trackClass, library, persistentID, destinationPath); if (error) *error = YTMIError(151, @"Music could not commit its client-import transaction."); return NO; }
+    YTMITrace(trace, @"music.client-import.session.committed");
 
     YTMINotifyLibrary(library);
-    if (!YTMIReloadMediaPlayerLibrary()) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(137, @"MediaPlayer could not reload the changed local library.");
-        return NO;
-    }
-    YTMITrace(trace, @"music.mediaplayer.reload.completed");
-
-    id freshTrack = nil;
-    NSString *resolvedPath = nil;
-    BOOL recordExists = NO, recordVisible = NO, pathReadable = NO, pathPlayable = NO, songVisible = NO;
+    if (YTMIReloadMediaPlayerLibrary()) YTMITrace(trace, @"music.mediaplayer.reload.completed");
+    id freshTrack = nil; NSString *resolvedPath = nil; BOOL songVisible = NO;
     NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:8.0];
     do {
-        recordExists = YTMISelector(trackClass, @"trackWithPersistentID:existsInLibrary:", 2) && ((BOOL (*)(id, SEL, unsigned long long, id))objc_msgSend)(trackClass, NSSelectorFromString(@"trackWithPersistentID:existsInLibrary:"), persistentID, library);
-        recordVisible = YTMISelector(trackClass, @"trackWithPersistentID:visibleInLibrary:", 2) && ((BOOL (*)(id, SEL, unsigned long long, id))objc_msgSend)(trackClass, NSSelectorFromString(@"trackWithPersistentID:visibleInLibrary:"), persistentID, library);
-        if (recordExists && YTMISelector(trackClass, @"newWithPersistentID:inLibrary:", 2)) freshTrack = ((id (*)(id, SEL, unsigned long long, id))objc_msgSend)(trackClass, NSSelectorFromString(@"newWithPersistentID:inLibrary:"), persistentID, library);
+        BOOL exists = YTMISelector(trackClass, @"trackWithPersistentID:existsInLibrary:", 2) &&
+            ((BOOL (*)(id, SEL, unsigned long long, id))objc_msgSend)(trackClass, NSSelectorFromString(@"trackWithPersistentID:existsInLibrary:"), persistentID, library);
+        if (exists && YTMISelector(trackClass, @"newWithPersistentID:inLibrary:", 2)) freshTrack = ((id (*)(id, SEL, unsigned long long, id))objc_msgSend)(trackClass, NSSelectorFromString(@"newWithPersistentID:inLibrary:"), persistentID, library);
         resolvedPath = freshTrack && YTMISelector(freshTrack, @"absoluteFilePath", 0) ? ((id (*)(id, SEL))objc_msgSend)(freshTrack, NSSelectorFromString(@"absoluteFilePath")) : nil;
-        pathReadable = [resolvedPath isKindOfClass:NSString.class] && [fm isReadableFileAtPath:resolvedPath];
-        pathPlayable = pathReadable && YTMIPlayablePath(resolvedPath);
-        MPMediaQuery *songs = [MPMediaQuery songsQuery];
-        MPMediaPropertyPredicate *identifier = [MPMediaPropertyPredicate predicateWithValue:@(persistentID) forProperty:MPMediaItemPropertyPersistentID];
-        [songs addFilterPredicate:identifier];
-        for (MPMediaItem *item in songs.items ?: @[]) {
-            if (item.persistentID == persistentID) { songVisible = YES; break; }
-        }
-        if (freshTrack && pathPlayable && songVisible) break;
+        MPMediaQuery *query = [MPMediaQuery songsQuery];
+        [query addFilterPredicate:[MPMediaPropertyPredicate predicateWithValue:@(persistentID) forProperty:MPMediaItemPropertyPersistentID]];
+        songVisible = NO;
+        for (MPMediaItem *item in query.items ?: @[]) if (item.persistentID == persistentID) { songVisible = YES; break; }
+        if (freshTrack && songVisible && YTMIPlayablePath(resolvedPath)) break;
         [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.10]];
     } while (deadline.timeIntervalSinceNow > 0);
-    if (!recordExists) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(105, @"Music did not retain the created record."); return NO; }
-    if (!freshTrack) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(107, @"Music could not reopen the created record."); return NO; }
-    if (![resolvedPath isKindOfClass:NSString.class] || !resolvedPath.length) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(108, @"Music did not retain the local audio location."); return NO; }
-    if (!pathReadable) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(109, @"Music retained an unreadable local audio location."); return NO; }
-    if (!pathPlayable) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(110, @"Music retained the record, but its local audio is not playable."); return NO; }
-    if (!songVisible) {
-        // Inspect the exact unrestricted Songs row first, then add each known
-        // MediaPlayer predicate independently. This keeps one failed filter
-        // from being hidden inside another generic code-124 result.
-        BOOL unrestrictedSong = YTMIQueryContainsTrack(persistentID, YES, YES, nil, nil);
-        BOOL restrictionsOnlySong = YTMIQueryContainsTrack(persistentID, YES, NO, nil, nil);
-        BOOL nonPurgeableSong = YTMIQueryContainsTrack(persistentID, YES, YES, @"hasNonPurgeableAsset", @YES);
-        BOOL playableSong = YTMIQueryContainsTrack(persistentID, YES, YES, @"isPlayable", @YES);
-        BOOL matchAudioSong = YTMIQueryContainsTrack(persistentID, YES, YES, @"isMatchAudio", @YES);
-        BOOL nonRentalSong = YTMIQueryContainsTrack(persistentID, YES, YES, @"isRental", @NO);
-        YTMITraceCheck(trace, @"unrestricted-songs", unrestrictedSong);
-        YTMITraceCheck(trace, @"restrictions-only", restrictionsOnlySong);
-        YTMITraceCheck(trace, @"non-purgeable", nonPurgeableSong);
-        YTMITraceCheck(trace, @"playable", playableSong);
-        YTMITraceCheck(trace, @"match-audio", matchAudioSong);
-        YTMITraceCheck(trace, @"non-rental", nonRentalSong);
-
-        NSInteger filterCode = 131;
-        NSString *filterMessage = @"Music's active system-filter selection excluded the local song.";
-        if (!unrestrictedSong) {
-            filterCode = 125;
-            filterMessage = @"Music excluded the record from the unrestricted Songs media classification.";
-        } else if (!restrictionsOnlySong) {
-            filterCode = 130;
-            filterMessage = @"Music's restrictions predicate excluded the local song.";
-        } else if (!nonRentalSong) {
-            filterCode = 129;
-            filterMessage = @"Music classified the local song as a rental.";
-        } else if (!playableSong) {
-            filterCode = 127;
-            filterMessage = @"Music's playability predicate excluded the local song.";
-        } else if (!nonPurgeableSong) {
-            filterCode = 126;
-            filterMessage = @"Music did not classify the local song as a non-purgeable asset.";
-        } else if (!matchAudioSong) {
-            filterCode = 128;
-            filterMessage = @"Music's match-audio predicate excluded the local song.";
-        }
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(filterCode, filterMessage);
-        return NO;
+    if (!freshTrack || !songVisible || !YTMIPlayablePath(resolvedPath)) {
+        YTMIRollBackExactTrack(trackClass, library, persistentID, destinationPath); if (error) *error = YTMIError(152, @"Music committed the transaction without a visible playable song."); return NO;
     }
-    if (recordVisible) YTMITrace(trace, @"music.generic-filter.match");
-    YTMITrace(trace, @"music.songs-query.match");
+    YTMITrace(trace, @"music.client-import.track.reopened");
+    YTMITrace(trace, @"music.client-import.song.visible");
+    YTMITrace(trace, @"music.client-import.audio.playable");
 
-    SEL valueSEL = NSSelectorFromString(@"valueForProperty:");
-    if (!YTMISelector(freshTrack, @"valueForProperty:", 1)) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(111, @"Music could not read back the imported metadata."); return NO; }
-    NSString *actualTitle = ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, valueSEL, YTMIProperty(music, "ML3TrackPropertyTitle", @"title"));
-    NSString *actualArtist = ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, valueSEL, YTMIProperty(music, "ML3TrackPropertyArtist", @"artist"));
-    NSString *actualAlbum = ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, valueSEL, YTMIProperty(music, "ML3TrackPropertyAlbum", @"album"));
-    id actualMediaType = ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, valueSEL, YTMIProperty(music, "ML3TrackPropertyMediaType", @"media_type"));
-    id actualArtistID = ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, valueSEL, YTMIProperty(music, "ML3TrackPropertyArtistPersistentID", @"item_artist_pid"));
-    id actualAlbumID = ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, valueSEL, YTMIProperty(music, "ML3TrackPropertyAlbumPersistentID", @"album_pid"));
-    if (![actualMediaType respondsToSelector:@selector(unsignedIntegerValue)] || [actualMediaType unsignedIntegerValue] != internalMusicMediaType.unsignedIntegerValue) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(120, @"Music did not retain the mapped internal song media type."); return NO; }
-    YTMITrace(trace, @"music.media-type.internal-match");
-    if (![actualTitle isEqualToString:title]) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(112, @"Music saved a different title than requested."); return NO; }
-    YTMITrace(trace, @"music.metadata.title-match");
-    if (![actualArtistID respondsToSelector:@selector(unsignedLongLongValue)] || [actualArtistID unsignedLongLongValue] != artistID) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(117, @"Music did not retain the artist relationship."); return NO; }
-    YTMITrace(trace, @"music.artist.relationship-match");
-    if (![actualAlbumID respondsToSelector:@selector(unsignedLongLongValue)] || [actualAlbumID unsignedLongLongValue] != albumID) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(118, @"Music did not retain the album relationship."); return NO; }
-    YTMITrace(trace, @"music.album.relationship-match");
-    if (![actualArtist isEqualToString:artist]) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(113, @"Music saved a different artist than requested."); return NO; }
-    YTMITrace(trace, @"music.metadata.artist-match");
-    if (![actualAlbum isEqualToString:album]) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(114, @"Music saved a different album than requested."); return NO; }
-    YTMITrace(trace, @"music.metadata.album-match");
-    YTMITrace(trace, @"music.metadata.verified");
-
-    if (!YTMIAlbumContainsTrack(albumID, persistentID)) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        if (error) *error = YTMIError(138, @"Music's album query did not contain the imported song.");
-        return NO;
+    NSString *titleProperty = YTMIProperty(music, "ML3TrackPropertyTitle", @"title");
+    NSString *needsRestoreProperty = YTMIProperty(music, "ML3TrackPropertyNeedsRestore", @"needs_restore");
+    NSString *familyProperty = YTMIProperty(music, "ML3TrackPropertyStoreFamilyAccountID", @"store_family_account_id");
+    id actualTitle = YTMISelector(freshTrack, @"valueForProperty:", 1) ? ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, NSSelectorFromString(@"valueForProperty:"), titleProperty) : nil;
+    id actualNeedsRestore = YTMISelector(freshTrack, @"valueForProperty:", 1) ? ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, NSSelectorFromString(@"valueForProperty:"), needsRestoreProperty) : nil;
+    id actualFamily = YTMISelector(freshTrack, @"valueForProperty:", 1) ? ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, NSSelectorFromString(@"valueForProperty:"), familyProperty) : nil;
+    if (![actualTitle isEqual:title] || ![actualNeedsRestore respondsToSelector:@selector(boolValue)] || [actualNeedsRestore boolValue] ||
+        ![actualFamily respondsToSelector:@selector(unsignedLongLongValue)] || [actualFamily unsignedLongLongValue] != 0) {
+        YTMIRollBackExactTrack(trackClass, library, persistentID, destinationPath); if (error) *error = YTMIError(153, @"Music did not retain the imported song's ownership metadata."); return NO;
     }
-    YTMITrace(trace, @"music.album-membership.match");
-
-    YTMIModelRequestResult modelResult = YTMIModelLibraryContainsTrack(persistentID, albumID, trace);
-    if (modelResult != YTMIModelRequestMatched) {
-        YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
-        NSInteger modelCode = 142;
-        NSString *modelMessage = @"Music's model library did not contain the imported song.";
-        if (modelResult == YTMIModelRequestUnavailable) {
-            modelCode = 139;
-            modelMessage = @"Music's model-library request interface is unavailable.";
-        } else if (modelResult == YTMIModelRequestFailed) {
-            modelCode = 140;
-            modelMessage = @"Music's model-library request failed.";
-        } else if (modelResult == YTMIModelRequestTimedOut) {
-            modelCode = 141;
-            modelMessage = @"Music's model-library request timed out.";
-        }
-        if (error) *error = YTMIError(modelCode, modelMessage);
-        return NO;
+    YTMITrace(trace, @"music.client-import.metadata.verified");
+    if (!YTMIRecordOwnership(importID, persistentID, resolvedPath)) {
+        YTMIRollBackExactTrack(trackClass, library, persistentID, resolvedPath); if (error) *error = YTMIError(154, @"The exact cleanup ownership record could not be saved."); return NO;
     }
-    YTMITrace(trace, @"music.model-library.match");
-
-    YTMINotifyLibrary(library);
-    YTMITrace(trace, @"music.payload.verified");
+    YTMITrace(trace, @"music.ownership.recorded");
     return YES;
 }
 @end
