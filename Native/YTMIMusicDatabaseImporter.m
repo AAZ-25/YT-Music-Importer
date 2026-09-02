@@ -45,6 +45,16 @@ static void YTMISetOptionalValue(NSMutableDictionary *values, void *framework, c
     if (key.length && value) values[key] = value;
 }
 
+static NSNumber *YTMIInternalMusicMediaType(void) {
+    void *mediaPlayer = dlopen("/System/Library/Frameworks/MediaPlayer.framework/MediaPlayer", RTLD_NOW | RTLD_LOCAL);
+    void *symbol = mediaPlayer ? dlsym(mediaPlayer, "MLMediaTypeForMPMediaType") : NULL;
+    if (!symbol) symbol = dlsym(RTLD_DEFAULT, "MLMediaTypeForMPMediaType");
+    if (!symbol) return nil;
+
+    NSUInteger internalValue = ((NSUInteger (*)(NSUInteger))symbol)((NSUInteger)MPMediaTypeMusic);
+    return internalValue ? @(internalValue) : nil;
+}
+
 static NSString *YTMIMediaFolder(id library) {
     if (YTMISelector(library, @"mediaFolderPath", 0)) {
         id path = ((id (*)(id, SEL))objc_msgSend)(library, NSSelectorFromString(@"mediaFolderPath"));
@@ -169,6 +179,16 @@ static void YTMIRollBackImport(Class trackClass, unsigned long long trackID,
     if (!library) { if (error) *error = YTMIError(97, @"Music's local library could not be opened."); return NO; }
     YTMITrace(trace, @"music.local-api.available");
 
+    // MediaPlayer translates its public MPMediaType value before comparing it
+    // with MusicLibrary's internal ML3TrackPropertyMediaType. Never write the
+    // public enum directly into the internal property.
+    NSNumber *internalMusicMediaType = YTMIInternalMusicMediaType();
+    if (!internalMusicMediaType) {
+        if (error) *error = YTMIError(132, @"Music's internal media-type mapping is unavailable.");
+        return NO;
+    }
+    YTMITrace(trace, @"music.media-type.mapping.available");
+
     NSString *mediaFolder = YTMIMediaFolder(library);
     NSError *fileError = nil;
     NSString *directory = mediaFolder.length ? YTMIDestinationDirectory(mediaFolder, &fileError) : nil;
@@ -232,9 +252,7 @@ static void YTMIRollBackImport(Class trackClass, unsigned long long trackID,
     YTMISetValue(values, music, "ML3TrackPropertyTitle", @"title", title);
     YTMISetValue(values, music, "ML3TrackPropertyArtistPersistentID", @"item_artist_pid", @(artistID));
     YTMISetValue(values, music, "ML3TrackPropertyAlbumPersistentID", @"album_pid", @(albumID));
-    // MPMediaTypeMusic is 1 << 0. Value 8 is Audio iTunes U and is excluded
-    // from Music's songs query even though the underlying ML3 row is visible.
-    YTMISetValue(values, music, "ML3TrackPropertyMediaType", @"media_type", @1);
+    YTMISetValue(values, music, "ML3TrackPropertyMediaType", @"media_type", internalMusicMediaType);
     YTMISetValue(values, music, "ML3TrackPropertyTotalSize", @"total_size", attributes[NSFileSize] ?: @0);
     YTMISetValue(values, music, "ML3TrackPropertyTotalTime", @"total_time", @(milliseconds));
     YTMISetValue(values, music, "ML3TrackPropertyDateAdded", @"date_added", now);
@@ -321,7 +339,7 @@ static void YTMIRollBackImport(Class trackClass, unsigned long long trackID,
         YTMIProperty(music, "ML3TrackPropertyTitle", @"title"): title,
         YTMIProperty(music, "ML3TrackPropertyArtistPersistentID", @"item_artist_pid"): @(artistID),
         YTMIProperty(music, "ML3TrackPropertyAlbumPersistentID", @"album_pid"): @(albumID),
-        YTMIProperty(music, "ML3TrackPropertyMediaType", @"media_type"): @1
+        YTMIProperty(music, "ML3TrackPropertyMediaType", @"media_type"): internalMusicMediaType
     };
     BOOL metadataSaved = NO;
     @try { metadataSaved = ((BOOL (*)(id, SEL, id))objc_msgSend)(track, NSSelectorFromString(@"setValuesForPropertiesWithDictionary:"), committedMetadata); }
@@ -413,8 +431,8 @@ static void YTMIRollBackImport(Class trackClass, unsigned long long trackID,
     id actualMediaType = ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, valueSEL, YTMIProperty(music, "ML3TrackPropertyMediaType", @"media_type"));
     id actualArtistID = ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, valueSEL, YTMIProperty(music, "ML3TrackPropertyArtistPersistentID", @"item_artist_pid"));
     id actualAlbumID = ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, valueSEL, YTMIProperty(music, "ML3TrackPropertyAlbumPersistentID", @"album_pid"));
-    if (![actualMediaType respondsToSelector:@selector(unsignedIntegerValue)] || [actualMediaType unsignedIntegerValue] != MPMediaTypeMusic) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(120, @"Music did not retain the song media type."); return NO; }
-    YTMITrace(trace, @"music.media-type.music");
+    if (![actualMediaType respondsToSelector:@selector(unsignedIntegerValue)] || [actualMediaType unsignedIntegerValue] != internalMusicMediaType.unsignedIntegerValue) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(120, @"Music did not retain the mapped internal song media type."); return NO; }
+    YTMITrace(trace, @"music.media-type.internal-match");
     if (![actualTitle isEqualToString:title]) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(112, @"Music saved a different title than requested."); return NO; }
     YTMITrace(trace, @"music.metadata.title-match");
     if (![actualArtistID respondsToSelector:@selector(unsignedLongLongValue)] || [actualArtistID unsignedLongLongValue] != artistID) { YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath); if (error) *error = YTMIError(117, @"Music did not retain the artist relationship."); return NO; }
