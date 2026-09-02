@@ -137,19 +137,28 @@ typedef NS_ENUM(NSInteger, YTMIModelRequestResult) {
 };
 
 static YTMIModelRequestResult YTMIModelLibraryContainsTrack(unsigned long long persistentID,
-                                                             unsigned long long albumID) {
+                                                             unsigned long long albumID,
+                                                             NSMutableArray *trace) {
     Class requestClass = NSClassFromString(@"MPModelLibraryRequest");
     Class songClass = NSClassFromString(@"MPModelSong");
     Class propertySetClass = NSClassFromString(@"MPPropertySet");
-    if (!requestClass || !songClass || !propertySetClass ||
-        !YTMISelector(songClass, @"kindWithVariants:", 1) ||
+    if (!requestClass || !songClass || !propertySetClass) return YTMIModelRequestUnavailable;
+    YTMITrace(trace, @"music.model-library.classes.available");
+    if (!YTMISelector(songClass, @"kindWithVariants:", 1) ||
         !YTMISelector(propertySetClass, @"emptyPropertySet", 0)) return YTMIModelRequestUnavailable;
+    YTMITrace(trace, @"music.model-library.kind.available");
 
     id request = [requestClass new];
     if (!request || !YTMISelector(request, @"setItemKind:", 1) ||
-        !YTMISelector(request, @"setItemProperties:", 1) ||
-        !YTMISelector(request, @"setLegacyMediaQuery:forTransport:", 2) ||
-        !YTMISelector(request, @"performWithResponseHandler:", 1)) return YTMIModelRequestUnavailable;
+        !YTMISelector(request, @"setItemProperties:", 1)) return YTMIModelRequestUnavailable;
+    YTMITrace(trace, @"music.model-library.configuration.available");
+    BOOL hasPublicLegacySetter = YTMISelector(request, @"setLegacyMediaQuery:", 1);
+    BOOL hasTransportLegacySetter = YTMISelector(request, @"setLegacyMediaQuery:forTransport:", 2);
+    if ((!hasPublicLegacySetter && !hasTransportLegacySetter) ||
+        !YTMISelector(request, @"legacyMediaQuery", 0)) return YTMIModelRequestUnavailable;
+    YTMITrace(trace, @"music.model-library.legacy-query-setter.available");
+    if (!YTMISelector(request, @"performWithResponseHandler:", 1)) return YTMIModelRequestUnavailable;
+    YTMITrace(trace, @"music.model-library.execution.available");
 
     MPMediaQuery *query = [MPMediaQuery songsQuery];
     if (!query) return YTMIModelRequestUnavailable;
@@ -170,8 +179,20 @@ static YTMIModelRequestResult YTMIModelLibraryContainsTrack(unsigned long long p
     @try {
         ((void (*)(id, SEL, id))objc_msgSend)(request, NSSelectorFromString(@"setItemKind:"), kind);
         ((void (*)(id, SEL, id))objc_msgSend)(request, NSSelectorFromString(@"setItemProperties:"), properties);
-        ((void (*)(id, SEL, id, BOOL))objc_msgSend)(request,
-            NSSelectorFromString(@"setLegacyMediaQuery:forTransport:"), query, NO);
+        if (hasPublicLegacySetter) {
+            ((void (*)(id, SEL, id))objc_msgSend)(request,
+                NSSelectorFromString(@"setLegacyMediaQuery:"), query);
+        }
+        id boundQuery = ((id (*)(id, SEL))objc_msgSend)(request,
+            NSSelectorFromString(@"legacyMediaQuery"));
+        if (!boundQuery && hasTransportLegacySetter) {
+            ((void (*)(id, SEL, id, BOOL))objc_msgSend)(request,
+                NSSelectorFromString(@"setLegacyMediaQuery:forTransport:"), query, NO);
+            boundQuery = ((id (*)(id, SEL))objc_msgSend)(request,
+                NSSelectorFromString(@"legacyMediaQuery"));
+        }
+        if (!boundQuery) return YTMIModelRequestFailed;
+        YTMITrace(trace, @"music.model-library.legacy-query.bound");
         void (^handler)(id, NSError *) = ^(id response, NSError *requestError) {
             failed = requestError != nil || !response;
             if (!failed && YTMISelector(response, @"results", 0)) {
@@ -604,7 +625,7 @@ static void YTMIRollBackImport(Class trackClass, unsigned long long trackID,
     }
     YTMITrace(trace, @"music.album-membership.match");
 
-    YTMIModelRequestResult modelResult = YTMIModelLibraryContainsTrack(persistentID, albumID);
+    YTMIModelRequestResult modelResult = YTMIModelLibraryContainsTrack(persistentID, albumID, trace);
     if (modelResult != YTMIModelRequestMatched) {
         YTMIRollBackImport(trackClass, persistentID, artistClass, artistID, albumClass, albumID, library, destinationPath);
         NSInteger modelCode = 142;
