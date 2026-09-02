@@ -85,6 +85,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run list --limit 100 --json databaseId,status --jq '.[] | select(.status == "completed") | .databaseId' | while read -r RUN; do
-            if [ "$RUN" != "$GITHUB_RUN_ID" ]; then gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" >/dev/null 2>&1 || true; fi
-          done
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/33584222891" >/dev/null 2>&1 || true
