@@ -133,7 +133,7 @@ static BOOL YTMIRecordOwnership(NSString *importID, unsigned long long persisten
     NSMutableDictionary *entries = [ledger[@"entries"] isKindOfClass:NSDictionary.class] ? [ledger[@"entries"] mutableCopy] : [NSMutableDictionary dictionary];
     NSString *key = [NSString stringWithFormat:@"%llu", persistentID];
     entries[key] = @{@"persistentID":@(persistentID), @"path":path,
-                     @"importID":importID.length ? importID : @"B61-UNKNOWN"};
+                     @"importID":importID.length ? importID : @"B62-UNKNOWN"};
     ledger[@"schema"] = @2;
     ledger[@"entries"] = entries;
     if (![ledger writeToFile:YTMIOwnershipLedgerPath atomically:YES]) return NO;
@@ -296,7 +296,7 @@ static BOOL YTMICleanupLegacyOwnedDebris(id library, Class trackClass, Class alb
     NSString *title = YTMISafeText(metadata[YTMIJobTitleKey], @"YouTube Audio");
     NSString *artistName = YTMISafeText(metadata[YTMIJobArtistKey], @"YouTube");
     NSString *albumName = YTMISafeText(metadata[YTMIJobAlbumKey], @"YT Music Importer");
-    NSString *importID = YTMISafeText(metadata[YTMIJobImportIDKey], @"B61-UNKNOWN");
+    NSString *importID = YTMISafeText(metadata[YTMIJobImportIDKey], @"B62-UNKNOWN");
     NSDictionary *attributes = [fm attributesOfItemAtPath:destinationPath error:nil];
     int64_t milliseconds = (int64_t)llround(seconds * 1000.0);
     int64_t absoluteTime = (int64_t)floor(NSDate.date.timeIntervalSinceReferenceDate);
@@ -405,6 +405,52 @@ static BOOL YTMICleanupLegacyOwnedDebris(id library, Class trackClass, Class alb
     }
     YTMITrace(trace, @"music.location.transaction.returned");
 
+    NSString *membershipProperty = YTMIProperty(music, "ML3TrackPropertyIsInMyLibrary", @"in_my_library");
+    SEL valueSelector = NSSelectorFromString(@"valueForProperty:");
+    id initialMembership = YTMISelector(importedTrack, @"valueForProperty:", 1) ?
+        ((id (*)(id, SEL, id))objc_msgSend)(importedTrack, valueSelector, membershipProperty) : nil;
+    if (![initialMembership respondsToSelector:@selector(boolValue)] || ![initialMembership boolValue]) {
+        YTMITrace(trace, @"music.membership.missing");
+        if (!YTMISelector(importedTrack, @"setValue:forProperty:", 2)) {
+            YTMIRollBackExactTrack(trackClass, library, persistentID, destinationPath);
+            if (error) *error = YTMIError(162, @"Music's user-library membership transaction is unavailable.");
+            return NO;
+        }
+        BOOL membershipWritten = NO;
+        YTMITrace(trace, @"music.membership.transaction.started");
+        @try {
+            membershipWritten = ((BOOL (*)(id, SEL, id, id))objc_msgSend)(importedTrack,
+                NSSelectorFromString(@"setValue:forProperty:"), @YES, membershipProperty);
+        } @catch (__unused NSException *exception) { membershipWritten = NO; }
+        if (!membershipWritten) {
+            YTMIRollBackExactTrack(trackClass, library, persistentID, destinationPath);
+            if (error) *error = YTMIError(163, @"Music rejected the user-library membership transaction.");
+            return NO;
+        }
+        YTMITrace(trace, @"music.membership.transaction.returned");
+
+        id membershipTrack = nil;
+        id committedMembership = nil;
+        NSDate *membershipDeadline = [NSDate dateWithTimeIntervalSinceNow:3.0];
+        do {
+            membershipTrack = YTMISelector(trackClass, @"newWithPersistentID:inLibrary:", 2) ?
+                ((id (*)(id, SEL, unsigned long long, id))objc_msgSend)(trackClass,
+                    NSSelectorFromString(@"newWithPersistentID:inLibrary:"), persistentID, library) : nil;
+            committedMembership = membershipTrack && YTMISelector(membershipTrack, @"valueForProperty:", 1) ?
+                ((id (*)(id, SEL, id))objc_msgSend)(membershipTrack, valueSelector, membershipProperty) : nil;
+            if ([committedMembership respondsToSelector:@selector(boolValue)] && [committedMembership boolValue]) break;
+            [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.10]];
+        } while (membershipDeadline.timeIntervalSinceNow > 0);
+        if (![committedMembership respondsToSelector:@selector(boolValue)] || ![committedMembership boolValue]) {
+            YTMIRollBackExactTrack(trackClass, library, persistentID, destinationPath);
+            if (error) *error = YTMIError(164, @"Music did not commit the user-library membership change.");
+            return NO;
+        }
+        YTMITrace(trace, @"music.membership.transaction.committed");
+    } else {
+        YTMITrace(trace, @"music.membership.already-present");
+    }
+
     YTMINotifyLibrary(library);
     if (YTMIReloadMediaPlayerLibrary()) YTMITrace(trace, @"music.mediaplayer.reload.completed");
     id freshTrack = nil;
@@ -453,15 +499,13 @@ static BOOL YTMICleanupLegacyOwnedDebris(id library, Class trackClass, Class alb
     NSString *titleProperty = YTMIProperty(music, "ML3TrackPropertyTitle", @"title");
     NSString *artistProperty = YTMIProperty(music, "ML3TrackPropertyArtist", @"artist");
     NSString *albumProperty = YTMIProperty(music, "ML3TrackPropertyAlbum", @"album");
-    NSString *membershipProperty = YTMIProperty(music, "ML3TrackPropertyIsInMyLibrary", @"in_my_library");
     NSString *needsRestoreProperty = YTMIProperty(music, "ML3TrackPropertyNeedsRestore", @"needs_restore");
     NSString *familyProperty = YTMIProperty(music, "ML3TrackPropertyStoreFamilyAccountID", @"store_family_account_id");
-    SEL valueSelector = NSSelectorFromString(@"valueForProperty:");
     id actualMembership = YTMISelector(freshTrack, @"valueForProperty:", 1) ?
         ((id (*)(id, SEL, id))objc_msgSend)(freshTrack, valueSelector, membershipProperty) : nil;
     if (![actualMembership respondsToSelector:@selector(boolValue)] || ![actualMembership boolValue]) {
         YTMIRollBackExactTrack(trackClass, library, persistentID, resolvedPath);
-        if (error) *error = YTMIError(161, @"Music did not retain the imported song in the user's local library.");
+        if (error) *error = YTMIError(165, @"Music did not retain user-library membership after its content reload.");
         return NO;
     }
     YTMITrace(trace, @"music.membership.verified");

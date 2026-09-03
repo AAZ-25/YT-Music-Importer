@@ -1,6 +1,6 @@
 Package: com.aaz.ytmusicimporter
 Name: YT Music Importer
-Version: 0.2.0~beta61
+Version: 0.2.0~beta62
 Architecture: iphoneos-arm64
 Description: Download YouTube audio and import saved audio into Music.
 Maintainer: AAZ
