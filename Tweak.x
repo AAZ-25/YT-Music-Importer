@@ -17,6 +17,7 @@ static __weak YTPlayerViewController *YTMIActivePlayer = nil;
 static BOOL YTMIBetaNoticePresentationInFlight = NO;
 static const void *YTMIDownloadsControllerKey = &YTMIDownloadsControllerKey;
 static NSString * const YTMIPivotIdentifier = @"FEYTMI_DOWNLOADS";
+static const NSInteger YTMIDownloadsIconType = 891;
 static BOOL YTMILoggingEnabled(void) {
     return YES;
 }
@@ -97,24 +98,161 @@ static void YTMIShowMessage(YTPlayerViewController *player, NSString *message) {
     });
 }
 
-static void YTMIScheduleBetaNotice(YTPlayerViewController *player) {
+@interface YTMIMatrixSplashViewController : UIViewController
+@property (nonatomic, strong) UILabel *terminalLabel;
+@property (nonatomic, strong) UIProgressView *progressView;
+@property (nonatomic, assign) BOOL animationStarted;
+@end
+
+@implementation YTMIMatrixSplashViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.74];
+
+    UIView *card = [UIView new];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.backgroundColor = [UIColor colorWithRed:0.015 green:0.035 blue:0.02 alpha:0.98];
+    card.layer.cornerRadius = 22.0;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [UIColor colorWithRed:0.15 green:1.0 blue:0.42 alpha:0.55].CGColor;
+    card.layer.shadowColor = UIColor.blackColor.CGColor;
+    card.layer.shadowOpacity = 0.42;
+    card.layer.shadowRadius = 24.0;
+    card.layer.shadowOffset = CGSizeMake(0, 12);
+
+    UILabel *matrix = [UILabel new];
+    matrix.translatesAutoresizingMaskIntoConstraints = NO;
+    matrix.text = @"01011001 01010100 01001101 01001001\n00110110 00110010 00110001 00000001\n10100110 01101001 01010100 01001101";
+    matrix.numberOfLines = 0;
+    matrix.font = [UIFont monospacedSystemFontOfSize:10 weight:UIFontWeightRegular];
+    matrix.textColor = [UIColor colorWithRed:0.05 green:0.7 blue:0.25 alpha:0.22];
+
+    UILabel *title = [UILabel new];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = @"YT MUSIC IMPORTER";
+    title.font = [UIFont monospacedSystemFontOfSize:19 weight:UIFontWeightBold];
+    title.textColor = [UIColor colorWithRed:0.2 green:1.0 blue:0.45 alpha:1.0];
+    title.textAlignment = NSTextAlignmentCenter;
+
+    UILabel *version = [UILabel new];
+    version.translatesAutoresizingMaskIntoConstraints = NO;
+    version.text = @"v1.0.0-beta.1  ·  LOCAL MODE";
+    version.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
+    version.textColor = UIColor.secondaryLabelColor;
+    version.textAlignment = NSTextAlignmentCenter;
+
+    UILabel *terminal = [UILabel new];
+    terminal.translatesAutoresizingMaskIntoConstraints = NO;
+    terminal.numberOfLines = 0;
+    terminal.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightMedium];
+    terminal.textColor = [UIColor colorWithRed:0.25 green:1.0 blue:0.5 alpha:1.0];
+    terminal.text = @"> INITIALIZING LOCAL MODULE_";
+    terminal.accessibilityLabel = @"YT Music Importer is starting";
+    self.terminalLabel = terminal;
+
+    UIProgressView *progress = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+    progress.translatesAutoresizingMaskIntoConstraints = NO;
+    progress.progressTintColor = [UIColor colorWithRed:0.15 green:1.0 blue:0.42 alpha:1.0];
+    progress.trackTintColor = [UIColor colorWithWhite:1.0 alpha:0.10];
+    progress.progress = 0.08;
+    progress.accessibilityLabel = @"Startup progress";
+    self.progressView = progress;
+
+    UILabel *note = [UILabel new];
+    note.translatesAutoresizingMaskIntoConstraints = NO;
+    note.text = @"Visual startup sequence — no device scan or network activity";
+    note.font = [UIFont systemFontOfSize:10 weight:UIFontWeightRegular];
+    note.textColor = [UIColor colorWithWhite:0.68 alpha:1.0];
+    note.textAlignment = NSTextAlignmentCenter;
+    note.numberOfLines = 0;
+
+    [self.view addSubview:card];
+    [card addSubview:matrix];
+    [card addSubview:title];
+    [card addSubview:version];
+    [card addSubview:terminal];
+    [card addSubview:progress];
+    [card addSubview:note];
+    NSLayoutConstraint *responsiveWidth = [card.widthAnchor constraintEqualToAnchor:self.view.widthAnchor multiplier:0.88];
+    responsiveWidth.priority = UILayoutPriorityDefaultHigh;
+    [NSLayoutConstraint activateConstraints:@[
+        [card.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [card.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [card.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:26],
+        [card.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-26],
+        [card.widthAnchor constraintLessThanOrEqualToConstant:390],
+        responsiveWidth,
+        [matrix.topAnchor constraintEqualToAnchor:card.topAnchor constant:18],
+        [matrix.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:20],
+        [matrix.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-20],
+        [title.topAnchor constraintEqualToAnchor:matrix.bottomAnchor constant:12],
+        [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:20],
+        [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-20],
+        [version.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:7],
+        [version.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:20],
+        [version.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-20],
+        [terminal.topAnchor constraintEqualToAnchor:version.bottomAnchor constant:24],
+        [terminal.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:22],
+        [terminal.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-22],
+        [progress.topAnchor constraintEqualToAnchor:terminal.bottomAnchor constant:20],
+        [progress.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:22],
+        [progress.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-22],
+        [note.topAnchor constraintEqualToAnchor:progress.bottomAnchor constant:16],
+        [note.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:22],
+        [note.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-22],
+        [note.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-18]
+    ]];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.animationStarted) return;
+    self.animationStarted = YES;
+    NSArray<NSString *> *stages = @[
+        @"> INITIALIZING LOCAL MODULE... OK",
+        @"> LINKING AUDIO BRIDGE... OK",
+        @"> MOUNTING DOWNLOADS... OK",
+        @"> UI CHANNEL... READY"
+    ];
+    NSArray<NSNumber *> *progress = @[@0.24, @0.52, @0.78, @1.0];
+    __weak typeof(self) weakSelf = self;
+    for (NSUInteger index = 0; index < stages.count; index++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((0.28 + (0.44 * index)) * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            YTMIMatrixSplashViewController *strongSelf = weakSelf;
+            if (!strongSelf) return;
+            strongSelf.terminalLabel.text = [[stages subarrayWithRange:NSMakeRange(0, index + 1)] componentsJoinedByString:@"\n"];
+            [strongSelf.progressView setProgress:[(NSNumber *)progress[index] floatValue] animated:YES];
+            if (index + 1 == stages.count) {
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.62 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [weakSelf dismissViewControllerAnimated:YES completion:nil];
+                });
+            }
+        });
+    }
+}
+
+@end
+
+static void YTMIScheduleStartupSplash(YTPlayerViewController *player) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        NSString *key = @"YTMusicImporterBeta63NoticeShown";
+        NSString *key = @"YTMusicImporterV1Beta1SplashShown";
         NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
         if ([defaults boolForKey:key] || YTMIBetaNoticePresentationInFlight) return;
         UIViewController *presenter = YTMIVisibleController(player ?: YTMIActivePlayer ?: YTMIFallbackPresenter());
         if (!presenter || [presenter isKindOfClass:UIAlertController.class] || presenter.presentedViewController || presenter.isBeingDismissed) {
-            YTMIScheduleBetaNotice(player ?: YTMIActivePlayer);
+            YTMIScheduleStartupSplash(player ?: YTMIActivePlayer);
             return;
         }
-        UIAlertController *notice = [UIAlertController alertControllerWithTitle:@"YT Music Importer" message:@"Beta 63 keeps the verified Beta 62 import engine and adds a smoother Downloads tab with deletion confirmation." preferredStyle:UIAlertControllerStyleAlert];
-        [notice addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        YTMIMatrixSplashViewController *notice = [YTMIMatrixSplashViewController new];
+        notice.modalPresentationStyle = UIModalPresentationOverFullScreen;
+        notice.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
         YTMIBetaNoticePresentationInFlight = YES;
         [presenter presentViewController:notice animated:YES completion:^{
             BOOL shown = notice.presentingViewController != nil;
             if (shown) [defaults setBool:YES forKey:key];
             YTMIBetaNoticePresentationInFlight = NO;
-            if (!shown) YTMIScheduleBetaNotice(player ?: YTMIActivePlayer);
+            if (!shown) YTMIScheduleStartupSplash(player ?: YTMIActivePlayer);
         }];
     });
 }
@@ -191,7 +329,7 @@ static void YTMIImportLibraryItem(NSDictionary *item, YTPlayerViewController *pl
     NSURL *audioURL = YTMIURLForLibraryItem(item);
     if (!audioURL) { YTMIShowMessage(player, @"The downloaded audio file is unavailable."); return; }
     NSString *rawID = [[[[NSUUID UUID] UUIDString] stringByReplacingOccurrencesOfString:@"-" withString:@""] uppercaseString];
-    NSString *importID = [NSString stringWithFormat:@"B63-%@", [rawID substringToIndex:8]];
+    NSString *importID = [NSString stringWithFormat:@"V1B1-%@", [rawID substringToIndex:8]];
     YTMIShowMessage(player, [NSString stringWithFormat:@"%@ started. Progress will be shown inside Music.", importID]);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSMutableDictionary *metadata = [YTMIMetadataForLibraryItem(item) mutableCopy];
@@ -568,7 +706,7 @@ static void YTMISubmitDownload(YTPlayerViewController *player, UIAlertController
 
 static void YTMIPresentImport(YTPlayerViewController *player) {
     if (!player) return;
-    UIAlertController *form = [UIAlertController alertControllerWithTitle:@"YT Music Importer — Beta 63" message:@"The verified Beta 62 import engine is unchanged. Every import gets a random Import ID, and diagnostics contain fixed stage names only." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *form = [UIAlertController alertControllerWithTitle:@"YT Music Importer — 1.0 Beta 1" message:@"Every import gets a random Import ID. Diagnostics contain fixed stage names only and do not include song, account, or device data." preferredStyle:UIAlertControllerStyleAlert];
     [form addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Title"; }];
     [form addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Artist"; }];
     [form addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Album (optional)"; }];
@@ -622,7 +760,7 @@ static id YTMIMakeDownloadsPivotItem(void) {
     Class rendererClass = NSClassFromString(@"YTIPivotBarRenderer");
     SEL factory = NSSelectorFromString(@"pivotSupportedRenderersWithBrowseId:title:iconType:");
     if (rendererClass && [rendererClass respondsToSelector:factory]) {
-        id renderer = ((id (*)(id, SEL, id, id, NSInteger))objc_msgSend)(rendererClass, factory, YTMIPivotIdentifier, @"Downloads", 77);
+        id renderer = ((id (*)(id, SEL, id, id, NSInteger))objc_msgSend)(rendererClass, factory, YTMIPivotIdentifier, @"Downloads", YTMIDownloadsIconType);
         id item = YTMIRuntimeValue(renderer, @"pivotBarItemRenderer");
         YTMISetRuntimeValue(item, @"setPivotIdentifier:", YTMIPivotIdentifier);
         if (renderer) return renderer;
@@ -641,9 +779,12 @@ static id YTMIMakeDownloadsPivotItem(void) {
     YTMISetRuntimeValue(itemRenderer, @"setNavigationEndpoint:", command);
     id title = ((id (*)(id, SEL, id))objc_msgSend)(formattedClass, formattedFactory, @"Downloads");
     YTMISetRuntimeValue(itemRenderer, @"setTitle:", title);
-    id icon = YTMIRuntimeValue(itemRenderer, @"icon");
+    id icon = [[NSClassFromString(@"YTIIcon") alloc] init];
     SEL setIconType = NSSelectorFromString(@"setIconType:");
-    if ([icon respondsToSelector:setIconType]) ((void (*)(id, SEL, NSInteger))objc_msgSend)(icon, setIconType, 77);
+    if ([icon respondsToSelector:setIconType]) {
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(icon, setIconType, YTMIDownloadsIconType);
+        YTMISetRuntimeValue(itemRenderer, @"setIcon:", icon);
+    }
     YTMISetRuntimeValue(supportedRenderer, @"setPivotBarItemRenderer:", itemRenderer);
     return supportedRenderer;
 }
@@ -738,7 +879,7 @@ static void YTMITryAttachDownloadsPage(id controller) {
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     YTMIActivePlayer = self;
-    YTMIScheduleBetaNotice(self);
+    YTMIScheduleStartupSplash(self);
 }
 %end
 %end
@@ -828,11 +969,11 @@ static void YTMITryAttachDownloadsPage(id controller) {
     NSString *enabledKey = [NSString stringWithFormat:@"YTVideoOverlay-%@-Enabled", YTMIOverlayKey];
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if ([defaults objectForKey:enabledKey] == nil) [defaults setBool:YES forKey:enabledKey];
-    if (![defaults boolForKey:@"YTMusicImporterBeta63LogInitialized"]) {
+    if (![defaults boolForKey:@"YTMusicImporterV1Beta1LogInitialized"]) {
         [NSFileManager.defaultManager removeItemAtPath:YTMILogPath() error:nil];
-        [defaults setBool:YES forKey:@"YTMusicImporterBeta63LogInitialized"];
+        [defaults setBool:YES forKey:@"YTMusicImporterV1Beta1LogInitialized"];
     }
-    YTMILogStage(@"build.beta63.loaded");
+    YTMILogStage(@"build.v1-beta1.loaded");
     YTMISetSABRLogger(^(NSString *stage) { YTMILogStage(stage); });
     YTMIInstallSABRCapture();
     initYTVideoOverlay(YTMIOverlayKey, @{AccessibilityLabelKey:@"YT Music Importer", SelectorKey:@"ytmi_buttonPressed:"});

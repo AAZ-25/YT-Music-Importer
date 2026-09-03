@@ -37,7 +37,7 @@ static void YTMIPresentMusicProgress(NSString *importID) {
     UIViewController *presenter = YTMIMusicPresenter();
     if (!presenter) return;
     YTMIProgressStarted = NSDate.date;
-    YTMIProgressAlert = [UIAlertController alertControllerWithTitle:@"YT Music Importer — Beta 63" message:[NSString stringWithFormat:@"%@\nPreparing local import\nElapsed: 00:00", importID] preferredStyle:UIAlertControllerStyleAlert];
+    YTMIProgressAlert = [UIAlertController alertControllerWithTitle:@"YT Music Importer — 1.0 Beta 1" message:[NSString stringWithFormat:@"%@\nPreparing local import\nElapsed: 00:00", importID] preferredStyle:UIAlertControllerStyleAlert];
     [presenter presentViewController:YTMIProgressAlert animated:YES completion:nil];
     YTMIProgressTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(__unused NSTimer *timer) {
         NSInteger elapsed = MAX(0, (NSInteger)-[YTMIProgressStarted timeIntervalSinceNow]);
