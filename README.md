@@ -2,7 +2,7 @@
 
 Import a video's audio into the Music app from inside YouTube on jailbroken iOS.
 
-`v1.0.0-beta.1` is the first official experimental release. It keeps audio processing local, adds a native Downloads tab with an audio icon, and includes a short Matrix-style startup animation.
+`v1.0.0-beta.2` is an official experimental release. It keeps audio processing local, adds a native Downloads tab with an audio icon, and includes an optional Matrix-style startup animation.
 
 ## Requirements
 
@@ -27,11 +27,11 @@ The importer first uses a normal direct audio stream when YouTube exposes one. W
 
 Processing happens locally. The tweak does not operate a separate server and does not upload your Music library or account information.
 
-The startup animation is visual only. It does not scan the device, execute commands, contact a server, or collect data.
+The startup animation is visual only. It appears once per YouTube app launch by default and can be disabled in **YT Music Importer Settings**. It does not scan the device, execute commands, contact a server, or collect data.
 
-Diagnostic logging records only general processing stages. It does not record video URLs, video identifiers, titles, artist or album metadata, account data, tokens, cookies, request bodies, or other authentication material.
+Diagnostic logging is off by default and can be enabled or disabled in **YT Music Importer Settings**. When enabled, it records only general processing stages. It does not record video URLs, video identifiers, titles, artist or album metadata, account data, tokens, cookies, request bodies, or other authentication material.
 
-If an import fails, repeat the attempt no more than once, then use **Share Debug Log** from the import form.
+If an import fails, enable diagnostics in Settings, repeat the attempt no more than once, then use **Share Diagnostic Log** from Settings.
 
 ## Notes
 

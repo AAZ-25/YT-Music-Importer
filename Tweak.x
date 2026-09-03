@@ -15,11 +15,20 @@
 
 static __weak YTPlayerViewController *YTMIActivePlayer = nil;
 static BOOL YTMIBetaNoticePresentationInFlight = NO;
+static BOOL YTMIStartupScreenShownThisLaunch = NO;
 static const void *YTMIDownloadsControllerKey = &YTMIDownloadsControllerKey;
 static NSString * const YTMIPivotIdentifier = @"FEYTMI_DOWNLOADS";
+static NSString * const YTMIStartupEnabledKey = @"YTMusicImporterStartupScreenEnabled";
+static NSString * const YTMIDiagnosticLoggingEnabledKey = @"YTMusicImporterDiagnosticLoggingEnabled";
 static const NSInteger YTMIDownloadsIconType = 891;
+static BOOL YTMIStartupScreenEnabled(void) {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    id value = [defaults objectForKey:YTMIStartupEnabledKey];
+    return value ? [defaults boolForKey:YTMIStartupEnabledKey] : YES;
+}
+
 static BOOL YTMILoggingEnabled(void) {
-    return YES;
+    return [NSUserDefaults.standardUserDefaults boolForKey:YTMIDiagnosticLoggingEnabledKey];
 }
 
 static NSString *YTMILogPath(void) {
@@ -137,7 +146,7 @@ static void YTMIShowMessage(YTPlayerViewController *player, NSString *message) {
 
     UILabel *version = [UILabel new];
     version.translatesAutoresizingMaskIntoConstraints = NO;
-    version.text = @"v1.0.0-beta.1  ·  LOCAL MODE";
+    version.text = @"v1.0.0-beta.2  ·  LOCAL MODE";
     version.font = [UIFont monospacedSystemFontOfSize:11 weight:UIFontWeightMedium];
     version.textColor = UIColor.secondaryLabelColor;
     version.textAlignment = NSTextAlignmentCenter;
@@ -236,9 +245,7 @@ static void YTMIShowMessage(YTPlayerViewController *player, NSString *message) {
 
 static void YTMIScheduleStartupSplash(YTPlayerViewController *player) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        NSString *key = @"YTMusicImporterV1Beta1SplashShown";
-        NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-        if ([defaults boolForKey:key] || YTMIBetaNoticePresentationInFlight) return;
+        if (!YTMIStartupScreenEnabled() || YTMIStartupScreenShownThisLaunch || YTMIBetaNoticePresentationInFlight) return;
         UIViewController *presenter = YTMIVisibleController(player ?: YTMIActivePlayer ?: YTMIFallbackPresenter());
         if (!presenter || [presenter isKindOfClass:UIAlertController.class] || presenter.presentedViewController || presenter.isBeingDismissed) {
             YTMIScheduleStartupSplash(player ?: YTMIActivePlayer);
@@ -250,11 +257,150 @@ static void YTMIScheduleStartupSplash(YTPlayerViewController *player) {
         YTMIBetaNoticePresentationInFlight = YES;
         [presenter presentViewController:notice animated:YES completion:^{
             BOOL shown = notice.presentingViewController != nil;
-            if (shown) [defaults setBool:YES forKey:key];
+            if (shown) YTMIStartupScreenShownThisLaunch = YES;
             YTMIBetaNoticePresentationInFlight = NO;
             if (!shown) YTMIScheduleStartupSplash(player ?: YTMIActivePlayer);
         }];
     });
+}
+
+@interface YTMISettingsViewController : UITableViewController
+@end
+
+@implementation YTMISettingsViewController
+
+- (instancetype)init {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"YT Music Importer";
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(ytmi_done)];
+}
+
+- (void)ytmi_done {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    (void)tableView;
+    return 2;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    (void)tableView;
+    return section == 0 ? 1 : 3;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    (void)tableView;
+    return section == 0 ? @"Startup" : @"Diagnostics";
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    (void)tableView;
+    if (section == 0) return @"When enabled, the Matrix-style screen appears once each time YouTube starts.";
+    return @"Diagnostic logging is off by default. When enabled, it records fixed processing stages only — never song, account, or device data.";
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    if (indexPath.section == 0) {
+        cell.textLabel.text = @"Matrix Startup Screen";
+        cell.imageView.image = [UIImage systemImageNamed:@"terminal"];
+        UISwitch *toggle = [UISwitch new];
+        toggle.on = YTMIStartupScreenEnabled();
+        [toggle addTarget:self action:@selector(ytmi_startupChanged:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = toggle;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    } else if (indexPath.row == 0) {
+        cell.textLabel.text = @"Diagnostic Logging";
+        cell.imageView.image = [UIImage systemImageNamed:@"waveform.path.ecg"];
+        UISwitch *toggle = [UISwitch new];
+        toggle.on = YTMILoggingEnabled();
+        [toggle addTarget:self action:@selector(ytmi_diagnosticsChanged:) forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = toggle;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    } else if (indexPath.row == 1) {
+        cell.textLabel.text = @"Share Diagnostic Log";
+        cell.imageView.image = [UIImage systemImageNamed:@"square.and.arrow.up"];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    } else {
+        cell.textLabel.text = @"Clear Diagnostic Log";
+        cell.textLabel.textColor = UIColor.systemRedColor;
+        cell.imageView.image = [UIImage systemImageNamed:@"trash"];
+        cell.imageView.tintColor = UIColor.systemRedColor;
+    }
+    return cell;
+}
+
+- (void)ytmi_startupChanged:(UISwitch *)toggle {
+    [NSUserDefaults.standardUserDefaults setBool:toggle.isOn forKey:YTMIStartupEnabledKey];
+}
+
+- (void)ytmi_diagnosticsChanged:(UISwitch *)toggle {
+    [NSUserDefaults.standardUserDefaults setBool:toggle.isOn forKey:YTMIDiagnosticLoggingEnabledKey];
+    if (toggle.isOn) YTMILogStage(@"diagnostics.enabled");
+}
+
+- (void)ytmi_showMessage:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"YT Music Importer" message:message preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)ytmi_shareDiagnosticLog {
+    NSString *path = YTMILogPath();
+    if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
+        [self ytmi_showMessage:@"No diagnostic log is available. Enable Diagnostic Logging and repeat one attempt if you need a log."];
+        return;
+    }
+    UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:path]] applicationActivities:nil];
+    share.popoverPresentationController.sourceView = self.view;
+    share.popoverPresentationController.sourceRect = self.view.bounds;
+    [self presentViewController:share animated:YES completion:nil];
+}
+
+- (void)ytmi_confirmClearDiagnosticLog {
+    UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"Clear Diagnostic Log?" message:@"This removes only YT Music Importer's local diagnostic log." preferredStyle:UIAlertControllerStyleAlert];
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [confirm addAction:[UIAlertAction actionWithTitle:@"Clear" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) {
+        [NSFileManager.defaultManager removeItemAtPath:YTMILogPath() error:nil];
+        [weakSelf ytmi_showMessage:@"Diagnostic log cleared."];
+    }]];
+    [self presentViewController:confirm animated:YES completion:nil];
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section != 1 || indexPath.row == 0) return;
+    if (indexPath.row == 1) [self ytmi_shareDiagnosticLog];
+    else [self ytmi_confirmClearDiagnosticLog];
+}
+
+@end
+
+static void YTMIPresentSettingsAttempt(UIViewController *source, NSUInteger attempt) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.16 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        UIViewController *presenter = YTMIVisibleController(source ?: YTMIFallbackPresenter() ?: YTMIActivePlayer);
+        if (!presenter || [presenter isKindOfClass:UIAlertController.class] || presenter.presentedViewController || presenter.isBeingDismissed) {
+            if (attempt < 8) YTMIPresentSettingsAttempt(source, attempt + 1);
+            return;
+        }
+        YTMISettingsViewController *settings = [YTMISettingsViewController new];
+        UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:settings];
+        navigation.modalPresentationStyle = UIModalPresentationPageSheet;
+        [presenter presentViewController:navigation animated:YES completion:nil];
+    });
+}
+
+static void YTMIPresentSettings(UIViewController *source) {
+    YTMIPresentSettingsAttempt(source, 0);
 }
 
 static NSString *YTMILibraryRoot(void) {
@@ -329,7 +475,7 @@ static void YTMIImportLibraryItem(NSDictionary *item, YTPlayerViewController *pl
     NSURL *audioURL = YTMIURLForLibraryItem(item);
     if (!audioURL) { YTMIShowMessage(player, @"The downloaded audio file is unavailable."); return; }
     NSString *rawID = [[[[NSUUID UUID] UUIDString] stringByReplacingOccurrencesOfString:@"-" withString:@""] uppercaseString];
-    NSString *importID = [NSString stringWithFormat:@"V1B1-%@", [rawID substringToIndex:8]];
+    NSString *importID = [NSString stringWithFormat:@"V1B2-%@", [rawID substringToIndex:8]];
     YTMIShowMessage(player, [NSString stringWithFormat:@"%@ started. Progress will be shown inside Music.", importID]);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSMutableDictionary *metadata = [YTMIMetadataForLibraryItem(item) mutableCopy];
@@ -424,6 +570,7 @@ static BOOL YTMIDeleteLibraryItem(NSDictionary *item, NSError **error) {
     self.navigationController.navigationBar.prefersLargeTitles = YES;
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"arrow.clockwise"] style:UIBarButtonItemStylePlain target:self action:@selector(ytmi_refresh)];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithImage:[UIImage systemImageNamed:@"gearshape"] style:UIBarButtonItemStylePlain target:self action:@selector(ytmi_settings)];
     UIRefreshControl *refresh = [UIRefreshControl new];
     [refresh addTarget:self action:@selector(ytmi_pullToRefresh:) forControlEvents:UIControlEventValueChanged];
     self.refreshControl = refresh;
@@ -437,6 +584,10 @@ static BOOL YTMIDeleteLibraryItem(NSDictionary *item, NSError **error) {
 
 - (void)ytmi_refresh {
     [self reloadLibraryAnimated:YES];
+}
+
+- (void)ytmi_settings {
+    YTMIPresentSettings(self);
 }
 
 - (void)ytmi_pullToRefresh:(UIRefreshControl *)refresh {
@@ -706,21 +857,13 @@ static void YTMISubmitDownload(YTPlayerViewController *player, UIAlertController
 
 static void YTMIPresentImport(YTPlayerViewController *player) {
     if (!player) return;
-    UIAlertController *form = [UIAlertController alertControllerWithTitle:@"YT Music Importer — 1.0 Beta 1" message:@"Every import gets a random Import ID. Diagnostics contain fixed stage names only and do not include song, account, or device data." preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *form = [UIAlertController alertControllerWithTitle:@"YT Music Importer — 1.0 Beta 2" message:@"Diagnostic logging is off by default and can be enabled in Settings. When enabled, it records fixed stage names only." preferredStyle:UIAlertControllerStyleAlert];
     [form addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Title"; }];
     [form addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Artist"; }];
     [form addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Album (optional)"; }];
     [form addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [form addAction:[UIAlertAction actionWithTitle:@"Downloads" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { YTMIPresentLibrary(player); }]];
-    [form addAction:[UIAlertAction actionWithTitle:@"Diagnostic Log: Always On" style:UIAlertActionStyleDefault handler:nil]];
-    [form addAction:[UIAlertAction actionWithTitle:@"Share Debug Log" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        NSString *path = YTMILogPath();
-        if (![NSFileManager.defaultManager fileExistsAtPath:path]) { YTMIShowMessage(player, @"No debug log is available yet."); return; }
-        UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:@[[NSURL fileURLWithPath:path]] applicationActivities:nil];
-        share.popoverPresentationController.sourceView = player.view;
-        share.popoverPresentationController.sourceRect = player.view.bounds;
-        [player presentViewController:share animated:YES completion:nil];
-    }]];
+    [form addAction:[UIAlertAction actionWithTitle:@"Settings" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { YTMIPresentSettings(player); }]];
     [form addAction:[UIAlertAction actionWithTitle:@"Download" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { YTMISubmitDownload(player, form); }]];
     [player presentViewController:form animated:YES completion:nil];
 }
@@ -927,6 +1070,7 @@ static void YTMITryAttachDownloadsPage(id controller) {
 }
 - (void)viewDidAppear:(BOOL)animated {
     %orig(animated);
+    YTMIScheduleStartupSplash(YTMIActivePlayer);
     YTMITryAttachDownloadsPage(self);
 }
 %end
@@ -969,11 +1113,14 @@ static void YTMITryAttachDownloadsPage(id controller) {
     NSString *enabledKey = [NSString stringWithFormat:@"YTVideoOverlay-%@-Enabled", YTMIOverlayKey];
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if ([defaults objectForKey:enabledKey] == nil) [defaults setBool:YES forKey:enabledKey];
-    if (![defaults boolForKey:@"YTMusicImporterV1Beta1LogInitialized"]) {
+    if ([defaults objectForKey:YTMIStartupEnabledKey] == nil) [defaults setBool:YES forKey:YTMIStartupEnabledKey];
+    if ([defaults objectForKey:YTMIDiagnosticLoggingEnabledKey] == nil) [defaults setBool:NO forKey:YTMIDiagnosticLoggingEnabledKey];
+    if (![defaults boolForKey:@"YTMusicImporterV1Beta2PreferencesMigrated"]) {
         [NSFileManager.defaultManager removeItemAtPath:YTMILogPath() error:nil];
-        [defaults setBool:YES forKey:@"YTMusicImporterV1Beta1LogInitialized"];
+        [defaults setBool:NO forKey:YTMIDiagnosticLoggingEnabledKey];
+        [defaults setBool:YES forKey:@"YTMusicImporterV1Beta2PreferencesMigrated"];
     }
-    YTMILogStage(@"build.v1-beta1.loaded");
+    YTMILogStage(@"build.v1-beta2.loaded");
     YTMISetSABRLogger(^(NSString *stage) { YTMILogStage(stage); });
     YTMIInstallSABRCapture();
     initYTVideoOverlay(YTMIOverlayKey, @{AccessibilityLabelKey:@"YT Music Importer", SelectorKey:@"ytmi_buttonPressed:"});

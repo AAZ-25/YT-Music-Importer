@@ -56,7 +56,7 @@ jobs:
         run: |
           DEB="$(find packages -name '*.deb' -type f | head -n 1)"
           test -n "$DEB"
-          test "$(dpkg-deb -f "$DEB" Version)" = "1.0.0~beta1"
+          test "$(dpkg-deb -f "$DEB" Version)" = "1.0.0~beta2"
           LIST="$(dpkg-deb -c "$DEB")"
           ! echo "$LIST" | grep -Eq 'ytmusicimporterd|ytmi-python|Python.framework|yt-dlp|MRYIPC|LaunchDaemons/com.aaz.ytmusicimporterd'
           echo "$LIST" | grep -q 'YTKACE-LICENSE'
@@ -76,7 +76,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete v1.0.0-beta.1 --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
-          RELEASE_ID="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name='v1.0.0-beta.1' -f target_commitish="$GITHUB_SHA" -f name='YT Music Importer 1.0 Beta 1' -f body='First official experimental release with local audio import, a native Downloads tab, deletion confirmation, and a visual Matrix-style startup sequence.' -F prerelease=true --jq '.id')"
+          gh release delete v1.0.0-beta.2 --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
+          RELEASE_ID="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name='v1.0.0-beta.2' -f target_commitish="$GITHUB_SHA" -f name='YT Music Importer 1.0 Beta 2' -f body='Experimental release with local audio import, configurable Matrix-style startup, optional diagnostics, native Downloads management, and deletion confirmation.' -F prerelease=true --jq '.id')"
           test -n "$RELEASE_ID"
-          gh release upload v1.0.0-beta.1 YT-Music-Importer-rootless.deb --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload v1.0.0-beta.2 YT-Music-Importer-rootless.deb --clobber --repo "$GITHUB_REPOSITORY"
+          gh release delete v1.0.0-beta.1 --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
