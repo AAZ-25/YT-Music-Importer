@@ -15,8 +15,9 @@ Import a video's audio into the Music app from inside YouTube on jailbroken iOS.
 2. Open it with Sileo or Zebra and install it normally.
 3. Respring if requested, then open YouTube.
 4. Play a video and tap the music import button.
-5. Review the title, artist, and optional album, then tap **Import**.
-6. Keep YouTube open while the audio is prepared and imported.
+5. Review the title, artist, and optional album, then tap **Download**.
+6. Open the **Downloads** tab in YouTube to import the saved audio into Music, share it, or request deletion.
+7. Deleting a saved download always requires confirmation and does not remove an existing imported song from Music.
 
 The importer first uses a normal direct audio stream when YouTube exposes one. When YouTube uses segmented playback instead, the importer can use the current YouTube playback session to retrieve the selected audio without changing global playback settings.
 
@@ -24,9 +25,9 @@ The importer first uses a normal direct audio stream when YouTube exposes one. W
 
 Processing happens locally. The tweak does not operate a separate server and does not upload your Music library or account information.
 
-Optional debug logging records only general processing stages. It does not record video URLs, video identifiers, titles, artist or album metadata, account data, tokens, cookies, request bodies, or other authentication material.
+Diagnostic logging records only general processing stages. It does not record video URLs, video identifiers, titles, artist or album metadata, account data, tokens, cookies, request bodies, or other authentication material.
 
-If an import fails, enable **Debug Logging** in the import form, repeat the attempt once, then use **Share Debug Log**.
+If an import fails, repeat the attempt no more than once, then use **Share Debug Log** from the import form.
 
 ## Notes
 

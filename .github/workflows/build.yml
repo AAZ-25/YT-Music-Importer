@@ -56,7 +56,7 @@ jobs:
         run: |
           DEB="$(find packages -name '*.deb' -type f | head -n 1)"
           test -n "$DEB"
-          test "$(dpkg-deb -f "$DEB" Version)" = "0.2.0~beta62"
+          test "$(dpkg-deb -f "$DEB" Version)" = "0.2.0~beta63"
           LIST="$(dpkg-deb -c "$DEB")"
           ! echo "$LIST" | grep -Eq 'ytmusicimporterd|ytmi-python|Python.framework|yt-dlp|MRYIPC|LaunchDaemons/com.aaz.ytmusicimporterd'
           echo "$LIST" | grep -q 'YTKACE-LICENSE'
@@ -76,15 +76,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          gh release delete v0.2.0-beta63 --cleanup-tag --yes >/dev/null 2>&1 || true
+          RELEASE_ID="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name='v0.2.0-beta63' -f target_commitish="$GITHUB_SHA" -f name='YT Music Importer Beta 63' -f body="Keeps the device-verified Beta 62 import engine unchanged and adds a native Downloads tab, smoother library management, and explicit confirmation before deleting a saved download." -F prerelease=true --jq '.id')"
+          gh release upload v0.2.0-beta63 YT-Music-Importer-rootless.deb --clobber
           gh release delete v0.2.0-beta62 --cleanup-tag --yes >/dev/null 2>&1 || true
-          RELEASE_ID="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name='v0.2.0-beta62' -f target_commitish="$GITHUB_SHA" -f name='YT Music Importer Beta 62' -f body="Test build that combines Music's client-import and exact local-file location transactions, commits missing user-library membership through the MusicLibrary entity writer, and verifies every state before acceptance." -F prerelease=true --jq '.id')"
-          gh release upload v0.2.0-beta62 YT-Music-Importer-rootless.deb --clobber
-          gh release delete v0.2.0-beta58 --cleanup-tag --yes >/dev/null 2>&1 || true
-          gh release delete v0.2.0-beta59 --cleanup-tag --yes >/dev/null 2>&1 || true
-          gh release delete v0.2.0-beta60 --cleanup-tag --yes >/dev/null 2>&1 || true
-          gh release delete v0.2.0-beta61 --cleanup-tag --yes >/dev/null 2>&1 || true
       - name: Cleanup obsolete Action
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/33699541366" >/dev/null 2>&1 || true
+        run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/33701613369" >/dev/null 2>&1 || true

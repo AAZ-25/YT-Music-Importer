@@ -5,6 +5,7 @@ YT Music Importer uses the following open-source components during build or runt
 - `YTVideoOverlay` commit `0f7dbc4387a0e38aad3180744e484fef6cbb9094` — MIT License.
 - `YouTubeHeader` commit `1b50d755dab2c79b8f5af45fc89719c812571ae0` — MIT License.
 - `YTKACE` commit `7e562661a68116949ee5f12addc412d074b859ef` — MIT License. The stream resolver and segmented-download implementation are used with local modifications.
+- `YTKACE` commit `98307a7a805969c5153b5143db5bb7680354e661` — MIT License. The native pivot-renderer tab integration pattern was adapted for the standalone Downloads tab.
 - `ByeTunes` commit `54491b21c9949fd0410f760cfca9e8cf11f06f1d` — MIT License. The complete local MediaLibrary relational-record layout and staged SQLite backup/checkpoint/replacement pattern were adapted for the rootless SpringBoard bridge. Its license notice is included in the package.
 
 Applicable license notices are preserved with the project and package.
@@ -68,4 +69,4 @@ Applicable license notices are preserved with the project and package.
 - Source: public reverse-engineered iOS 18.2 `ML3ClientImportSession`, `ML3ClientImportSessionConfiguration`, `ML3ClientImportItem`, `ML3ClientImportResult`, `MIPMediaItem`, `MIPSong`, `MIPArtist`, `MIPAlbum`, `MIPPlaybackInfo`, `MIPMultiverseIdentifier`, `IPodLibrary`, and `IPodLibraryML3TrackImporter` interfaces and implementations.
 - Reference commit: `e26ed4563f78871c59d2d96856756a65d62517e5`.
 - Use: distinguish daemon-only `IPodLibrary` helpers from the MusicLibrary client API that is callable from Music, then verify the supported XPC session lifecycle, MIP local-file payload, transaction-returned persistent-ID result, and exact final ownership states.
-- No Apple implementation source is copied or redistributed. Beta 62 independently constructs a minimal MIP payload, submits it through the runtime-checked client-import session, asks the returned Music record to perform Music's own local-file location transaction, and commits missing user-library membership through the entity writer transaction. It verifies membership readback, the exact resolved path, readable playable audio, metadata, and ownership ID before accepting the import.
+- No Apple implementation source is copied or redistributed. Beta 63 preserves the device-verified Beta 62 import engine: it independently constructs a minimal MIP payload, submits it through the runtime-checked client-import session, asks the returned Music record to perform Music's own local-file location transaction, and commits missing user-library membership through the entity writer transaction. It verifies membership readback, the exact resolved path, readable playable audio, metadata, and ownership ID before accepting the import.
