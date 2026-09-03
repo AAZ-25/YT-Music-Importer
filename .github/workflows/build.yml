@@ -56,7 +56,7 @@ jobs:
         run: |
           DEB="$(find packages -name '*.deb' -type f | head -n 1)"
           test -n "$DEB"
-          test "$(dpkg-deb -f "$DEB" Version)" = "0.2.0~beta60"
+          test "$(dpkg-deb -f "$DEB" Version)" = "0.2.0~beta61"
           LIST="$(dpkg-deb -c "$DEB")"
           ! echo "$LIST" | grep -Eq 'ytmusicimporterd|ytmi-python|Python.framework|yt-dlp|MRYIPC|LaunchDaemons/com.aaz.ytmusicimporterd'
           echo "$LIST" | grep -q 'YTKACE-LICENSE'
@@ -79,10 +79,11 @@ jobs:
           gh release delete v0.2.0-beta58 --cleanup-tag --yes >/dev/null 2>&1 || true
           gh release delete v0.2.0-beta59 --cleanup-tag --yes >/dev/null 2>&1 || true
           gh release delete v0.2.0-beta60 --cleanup-tag --yes >/dev/null 2>&1 || true
-          RELEASE_ID="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name='v0.2.0-beta60' -f target_commitish="$GITHUB_SHA" -f name='YT Music Importer Beta 60' -f body="Test build that safely removes importer-owned legacy debris, uses MusicLibrary's client-import transaction, requires its returned persistent ID, and records exact cleanup ownership." -F prerelease=true --jq '.id')"
-          gh release upload v0.2.0-beta60 YT-Music-Importer-rootless.deb --clobber
+          gh release delete v0.2.0-beta61 --cleanup-tag --yes >/dev/null 2>&1 || true
+          RELEASE_ID="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name='v0.2.0-beta61' -f target_commitish="$GITHUB_SHA" -f name='YT Music Importer Beta 61' -f body="Test build that combines MusicLibrary's client-import transaction with Music's own local-file location transaction on the exact returned record, then verifies path, readability, playback, membership, metadata, and exact cleanup ownership." -F prerelease=true --jq '.id')"
+          gh release upload v0.2.0-beta61 YT-Music-Importer-rootless.deb --clobber
       - name: Cleanup obsolete Action
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/33653201667" >/dev/null 2>&1 || true
+        run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/runs/33679958435" >/dev/null 2>&1 || true
