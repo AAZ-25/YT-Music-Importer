@@ -4,8 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
 
 env:
   THEOS: ${{ github.workspace }}/.theos-build
@@ -72,12 +71,3 @@ jobs:
           name: YT-Music-Importer
           path: YT-Music-Importer-rootless.deb
           if-no-files-found: error
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release delete v1.0.0-beta.2 --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
-          RELEASE_ID="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name='v1.0.0-beta.2' -f target_commitish="$GITHUB_SHA" -f name='YT Music Importer 1.0 Beta 2' -f body='Experimental release with local audio import, configurable Matrix-style startup, optional diagnostics, native Downloads management, and deletion confirmation.' -F prerelease=true --jq '.id')"
-          test -n "$RELEASE_ID"
-          gh release upload v1.0.0-beta.2 YT-Music-Importer-rootless.deb --clobber --repo "$GITHUB_REPOSITORY"
-          gh release delete v1.0.0-beta.1 --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
